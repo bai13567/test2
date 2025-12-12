@@ -1,6 +1,6 @@
 <!doctype html><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>Warm Healing — Natural Clouds (iOS-safe)</title>
+<title>Warm Healing — Seamless Clouds (iOS)</title>
 <style>
 html,body{margin:0;height:100%;overflow:hidden;background:#0b0605;font:12px ui-monospace,Menlo,Consolas,monospace}
 canvas{position:fixed;inset:0;display:block}
@@ -34,10 +34,7 @@ const S=document.getElementById("s"), BTN=document.getElementById("btn"), ERR=do
 const mobile=matchMedia("(pointer:coarse)").matches||innerWidth<760;
 const clamp=(x,a,b)=>x<a?a:x>b?b:x, lerp=(a,b,t)=>a+(b-a)*t;
 
-function showErr(e){
-  ERR.style.display="block";
-  ERR.textContent=String(e && (e.stack||e.message) || e);
-}
+function showErr(e){ ERR.style.display="block"; ERR.textContent=String(e && (e.stack||e.message) || e); }
 
 try{
 // ---------- Size / DPR ----------
@@ -71,7 +68,7 @@ function rgb2hsv(r,g,b){
   return [h,s,v];
 }
 
-// ---------- Palettes (warm healing, no purple/magenta) ----------
+// ---------- Warm palettes ----------
 const PALS=[
   ["#FFF6EE","#FFE2C2","#E5A877","#FFF9F4"],
   ["#FFF4EA","#FFDAB3","#E6A27A","#FFF8F2"],
@@ -80,7 +77,7 @@ const PALS=[
   ["#FFF6F0","#FFE0BA","#E3A16F","#FFF9F4"],
 ];
 
-// ---------- Noise helpers for cloud texture ----------
+// ---------- Noise for cloud texture ----------
 function hash2(ix,iy,seed){
   let x=(ix*374761393+iy*668265263)^(seed*1442695041);
   x=(x^(x>>>13))*1274126177;
@@ -99,13 +96,13 @@ function fbm2(x,y,seed){
   return f;
 }
 
-// ---------- Cloud texture built ONCE (prevents “pattern source missing” on iOS) ----------
+// ---------- Seamless cloud texture (mirror stitch) ----------
 let cloudTex=null;
-function buildCloudTexOnce(){
-  const seed=1337, N=256;
-  const c=document.createElement("canvas"); c.width=c.height=N;
-  const ctx=c.getContext("2d",{alpha:false});
-  const img=ctx.createImageData(N,N), d=img.data;
+function buildSeamlessCloudTex(){
+  const seed=1337, N=256;              // base
+  const base=document.createElement("canvas"); base.width=base.height=N;
+  const c0=base.getContext("2d",{alpha:false});
+  const img=c0.createImageData(N,N), d=img.data;
   for(let y=0;y<N;y++)for(let x=0;x<N;x++){
     const nx=x/N, ny=y/N;
     const v=fbm2(nx*2.2, ny*2.2, seed);
@@ -115,12 +112,28 @@ function buildCloudTexOnce(){
     const i=(y*N+x)*4;
     d[i]=g; d[i+1]=g; d[i+2]=g; d[i+3]=255;
   }
-  ctx.putImageData(img,0,0);
-  cloudTex=c;
-}
-buildCloudTexOnce();
+  c0.putImageData(img,0,0);
 
-// Pattern cache per-ctx (B ctx and preview ctx must NOT share createPattern)
+  // mirror to 512x512 => edges are continuous, no grid seams
+  const M=512;
+  const out=document.createElement("canvas"); out.width=out.height=M;
+  const c=out.getContext("2d",{alpha:false});
+  c.imageSmoothingEnabled=true;
+
+  // TL
+  c.drawImage(base,0,0,N,N,0,0,N,N);
+  // TR mirrored X
+  c.save(); c.translate(M,0); c.scale(-1,1); c.drawImage(base,0,0,N,N,0,0,N,N); c.restore();
+  // BL mirrored Y
+  c.save(); c.translate(0,M); c.scale(1,-1); c.drawImage(base,0,0,N,N,0,0,N,N); c.restore();
+  // BR mirrored XY
+  c.save(); c.translate(M,M); c.scale(-1,-1); c.drawImage(base,0,0,N,N,0,0,N,N); c.restore();
+
+  cloudTex=out;
+}
+buildSeamlessCloudTex();
+
+// pattern cache per context (B ctx & preview ctx must not share)
 const cloudPatternCache=new WeakMap();
 function getCloudPat(ctx){
   if(!cloudTex) return null;
@@ -128,14 +141,14 @@ function getCloudPat(ctx){
   if(p) return p;
   try{
     p=ctx.createPattern(cloudTex,"repeat");
-    if(!p) return null; // iOS may return null
+    if(!p) return null;
     cloudPatternCache.set(ctx,p);
     return p;
   }catch(e){ return null; }
 }
 
-// ---------- Grain texture (built per-candidate seed, but safe) ----------
-let grainTex=null;
+// ---------- Grain (dither to kill iOS banding) ----------
+let grainTex=null, grainPat=null;
 function buildGrain(seed){
   const N=256;
   const c=document.createElement("canvas"); c.width=c.height=N;
@@ -147,13 +160,12 @@ function buildGrain(seed){
     const r=rnd();
     const v=(r<0.5? r*r : 1-(1-r)*(1-r));
     const n=(v-0.5);
-    const a=clamp(12 + Math.abs(n)*36, 10, 52);
+    const a=clamp(12 + Math.abs(n)*34, 10, 50);
     d[i]=255; d[i+1]=255; d[i+2]=255; d[i+3]=a;
   }
   ctx.putImageData(img,0,0);
-  grainTex=c;
+  grainTex=c; grainPat=null;
 }
-let grainPat=null;
 function drawGrain(time,amount){
   if(!grainTex) return;
   if(!grainPat) grainPat=F.createPattern(grainTex,"repeat");
@@ -171,19 +183,25 @@ function drawGrain(time,amount){
 function genCandidate(seed){
   const rnd=makeRng(seed);
   const base=PALS[(rnd()*PALS.length)|0];
+
+  // clouds: stronger but still background-safe
   const cloudA=0.10+0.16*rnd();
-  const cloudS=0.75+1.35*rnd();
-  const cloudV=0.006+0.015*rnd();
-  const rippleA=0.02+0.05*rnd();
-  const rippleV=0.12+0.22*rnd();
+  const cloudS=0.55+1.20*rnd();
+  const cloudV=0.004+0.012*rnd();
+
+  // a tiny shimmer (optional, low)
+  const rippleA=0.015+0.040*rnd();
+  const rippleV=0.10+0.20*rnd();
+
   const warmth=0.06+0.10*rnd();
   const vign=0.06+0.12*rnd();
-  const grain=0.050+0.030*rnd();
+  const grain=0.055+0.025*rnd();
+
   const feat=[cloudA,cloudS,rippleA,rippleV,warmth,vign,grain];
   return {seed,base,cloudA,cloudS,cloudV,rippleA,rippleV,warmth,vign,grain,feat,score:0};
 }
 
-// ---------- Render (ctx-agnostic; uses ctx.createPattern safely) ----------
+// ---------- Render ----------
 function render(ctx,w,h,c,t){
   const [top,mid,low,glow]=c.base;
   const breathe=0.5+0.5*Math.sin(t*0.16);
@@ -199,23 +217,40 @@ function render(ctx,w,h,c,t){
   sky.addColorStop(1, low2);
   ctx.fillStyle=sky; ctx.fillRect(0,0,w,h);
 
-  // cloud texture (skip if pattern fails)
   const pat=getCloudPat(ctx);
   if(pat){
+    // TWO cloud layers (different angle/scale/speed) => destroys tiling rhythm
     ctx.save();
     ctx.globalCompositeOperation="soft-light";
-    ctx.globalAlpha=0.70;
-    const sx=(1/(c.cloudS))*w/256, sy=(1/(c.cloudS))*h/256;
-    const dx=(Math.sin(t*c.cloudV*6.0)*0.06 + Math.sin(t*0.03))*w;
-    const dy=(Math.cos(t*c.cloudV*5.0)*0.05 + Math.cos(t*0.028))*h;
-    ctx.translate(dx,dy);
-    ctx.scale(sx,sy);
-    ctx.fillStyle=pat;
-    ctx.fillRect(-512,-512,(w/sx)+1024,(h/sy)+1024);
+
+    const drawLayer=(alpha,scaleMul,ang,spdMul)=>{
+      ctx.globalAlpha=alpha;
+
+      const sx=(1/(c.cloudS*scaleMul))*w/512;
+      const sy=(1/(c.cloudS*scaleMul))*h/512;
+
+      const dx=(Math.sin(t*c.cloudV*6.0*spdMul)*0.08 + Math.sin(t*0.02))*w;
+      const dy=(Math.cos(t*c.cloudV*5.0*spdMul)*0.07 + Math.cos(t*0.018))*h;
+
+      ctx.save();
+      ctx.translate(w*0.5+dx, h*0.5+dy);
+      ctx.rotate(ang);
+      ctx.scale(sx,sy);
+      ctx.fillStyle=pat;
+      // big rect in pattern space
+      ctx.fillRect(-2048,-2048,4096,4096);
+      ctx.restore();
+    };
+
+    // layer1: soft body
+    drawLayer(0.55*(0.6+0.4*c.cloudA), 1.00, 0.18, 1.0);
+    // layer2: slower, larger, different angle
+    drawLayer(0.35*(0.6+0.4*c.cloudA), 0.62, -0.27, 0.55);
+
     ctx.restore();
   }
 
-  // light well
+  // light well (depth hierarchy)
   ctx.globalCompositeOperation="soft-light";
   const cx=w*0.35, cy=h*0.25, rr=Math.max(w,h)*0.90;
   const halo=ctx.createRadialGradient(cx,cy,0,cx,cy,rr);
@@ -224,11 +259,11 @@ function render(ctx,w,h,c,t){
   halo.addColorStop(1,"rgba(255,255,255,0)");
   ctx.fillStyle=halo; ctx.fillRect(0,0,w,h);
 
-  // subtle shimmer
+  // subtle shimmer (keep tiny, avoid “贴纸闪”)
   ctx.globalCompositeOperation="overlay";
-  ctx.globalAlpha=0.20;
-  for(let i=0;i<4;i++){
-    const p=i/4;
+  ctx.globalAlpha=0.16;
+  for(let i=0;i<3;i++){
+    const p=i/3;
     const ph=t*c.rippleV + p*2.3;
     const a=c.rippleA*(0.45+0.55*(0.5+0.5*Math.sin(ph)));
     const xoff=(Math.sin(ph*0.9)*0.08)*w;
@@ -242,7 +277,7 @@ function render(ctx,w,h,c,t){
   }
   ctx.globalAlpha=1;
 
-  // vignette
+  // vignette (very light)
   ctx.globalCompositeOperation="multiply";
   const v=ctx.createRadialGradient(w*0.5,h*0.55,Math.min(w,h)*0.30,w*0.5,h*0.55,Math.max(w,h)*0.95);
   v.addColorStop(0,"rgba(0,0,0,0)");
@@ -261,7 +296,6 @@ function analyze(img){
   const d=img.data, n=img.width*img.height;
   let warm=0,purple=0,dark=0,hot=0,muddy=0,satSum=0,lumSum=0,lum2=0;
   const lum=(r,g,b)=>0.2126*r+0.7152*g+0.0722*b;
-
   for(let y=0;y<img.height;y++)for(let x=0;x<img.width;x++){
     const i=(y*img.width+x)*4;
     const r=d[i], g=d[i+1], b=d[i+2];
@@ -279,7 +313,6 @@ function analyze(img){
       if(rg<0.06 && rb<0.06 && gb<0.06) muddy++;
     }
   }
-
   const warmP=warm/n, purpleP=purple/n, darkP=dark/n, hotP=hot/n, muddyP=muddy/n;
   const lumMean=lumSum/n, lumStd=Math.sqrt(Math.max(0, lum2/n - lumMean*lumMean));
   const satMean=satSum/n;
@@ -312,7 +345,6 @@ function scoreCandidate(c){
 
     let s = 0.26*sWarm + 0.30*sLum + 0.14*sCon + 0.10*sSat
            -0.20*pMud - 0.22*pPur - 0.06*pDark - 0.06*pHot;
-
     s=clamp(s,0,100);
     sum+=s; if(s>best) best=s;
   }
@@ -331,7 +363,7 @@ function scoreCandidate(c){
 // ---------- Selection ----------
 let seedBase=123456789, current=null, next=null;
 
-function findHigh(maxTry=18, threshold=82){
+function findHigh(maxTry=16, threshold=80){
   let best=null, bestS=-1;
   for(let i=0;i<maxTry;i++){
     seedBase=(seedBase*1664525+1013904223)>>>0;
@@ -359,7 +391,7 @@ function scheduleNext(){
       const c=genCandidate(seedBase);
       const s=scoreCandidate(c);
       if(s>bestS){bestS=s; best=c;}
-      if(s>=84 || tries>=24){ next=best; return; }
+      if(s>=82 || tries>=22){ next=best; return; }
     }
     setTimeout(step,0);
   };
@@ -370,7 +402,7 @@ function scheduleNext(){
 let auto=null;
 function switchNow(){
   if(next){ apply(next); next=null; scheduleNext(); }
-  else { apply(findHigh(14,82)); scheduleNext(); }
+  else { apply(findHigh(12,80)); scheduleNext(); }
   clearInterval(auto); auto=setInterval(()=>switchNow(),60*1000);
 }
 BTN.addEventListener("click",switchNow);
@@ -378,7 +410,7 @@ auto=setInterval(()=>switchNow(),60*1000);
 
 // ---------- Main loop ----------
 let last=performance.now(), t=0, ema=60, scale=1;
-apply(findHigh(18,82));
+apply(findHigh(16,80));
 scheduleNext();
 
 function draw(now){
