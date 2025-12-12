@@ -1,147 +1,91 @@
-<!doctype html><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>Ambient Gradient Field · Stone Finish</title>
+<!doctype html><html lang="zh"><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
+<title>Cool Realtime Background</title>
 <style>
-html,body{margin:0;height:100%;overflow:hidden;background:#050505}
-canvas{position:fixed;inset:0;display:block}
-#hud{position:fixed;left:12px;top:12px;right:12px;z-index:5;
-font:12px ui-monospace,Menlo,Consolas,monospace;color:#fff;mix-blend-mode:screen;
-background:rgba(0,0,0,.25);border:1px solid rgba(255,255,255,.15);
-border-radius:12px;padding:10px 12px;backdrop-filter:blur(10px)}
+  html,body{margin:0;height:100%;background:#000;overflow:hidden}
+  canvas{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none}
+  .hint{position:fixed;left:14px;bottom:12px;color:#fff8;font:12px/1.2 system-ui;user-select:none}
 </style>
-<canvas id="c"></canvas>
-<div id="hud">DEBUG · 左=本周期 t=0 固定快照 · 右=本周期实时变化 · 每 5 秒换一套</div>
-
+<canvas id="c"></canvas><div class="hint">tap = change mood</div>
 <script>
-(()=>{"use strict";
-const C=document.getElementById("c"),ctx=C.getContext("2d",{alpha:false});
-const clamp=(x,a,b)=>x<a?a:x>b?b:x;
-const lerp=(a,b,t)=>a+(b-a)*t;
-const mix3=(A,B,t)=>[lerp(A[0],B[0],t),lerp(A[1],B[1],t),lerp(A[2],B[2],t)];
-const rgb=(c,a=1)=>`rgba(${c[0]|0},${c[1]|0},${c[2]|0},${a})`;
+(()=>{const c=document.getElementById("c"),gl=c.getContext("webgl",{antialias:false,alpha:false});
+if(!gl){const g=c.getContext("2d");g.fillStyle="#fff";g.font="16px system-ui";g.fillText("WebGL not supported",20,30);return;}
+const V=`attribute vec2 p;void main(){gl_Position=vec4(p,0.,1.);}`;
+const F=`precision highp float;
+uniform vec2 r;uniform float t;uniform int mood;
+#define TAU 6.28318530718
+float hash(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453123);}
+float n2(vec2 p){vec2 i=floor(p),f=fract(p);f=f*f*(3.-2.*f);
+  float a=hash(i),b=hash(i+vec2(1,0)),c=hash(i+vec2(0,1)),d=hash(i+vec2(1,1));
+  return mix(mix(a,b,f.x),mix(c,d,f.x),f.y);
+}
+float fbm(vec2 p){
+  float v=0.,a=.55;mat2 M=mat2(1.6,1.2,-1.2,1.6);
+  for(int i=0;i<5;i++){v+=a*n2(p);p=M*p+0.07*t;a*=.55;}
+  return v;
+}
+vec3 pal(float x){
+  if(mood==0) return .55+.45*cos(TAU*(vec3(0.10,0.35,0.65)+x));
+  if(mood==1) return .55+.45*cos(TAU*(vec3(0.00,0.15,0.35)+x*1.1));
+  if(mood==2) return .55+.45*cos(TAU*(vec3(0.55,0.25,0.05)+x*0.9));
+  return .55+.45*cos(TAU*(vec3(0.20,0.55,0.85)+x*1.2));
+}
+void main(){
+  vec2 uv=(gl_FragCoord.xy-.5*r)/min(r.x,r.y);
+  vec2 p=uv;
+  float f=fbm(p*2.2 + vec2(0.0,0.18*t));
+  float g=fbm(p*5.2 - vec2(0.12*t,0.0));
+  float flow = f*0.75 + g*0.35;
+  float ring = smoothstep(0.58,0.02,abs(sin((flow+t*0.22)*3.0)));
+  float glow = pow(max(0.0,1.0-0.88*length(uv)),2.0);
+  vec3 col = pal(flow + 0.07*sin(t+uv.x*1.8));
+  col *= 0.62 + 0.9*ring;
+  col += 0.85*glow*pal(flow+0.18);
+  col = pow(col, vec3(0.92));
+  gl_FragColor=vec4(col,1.0);
+}`;
+function sh(type,src){const s=gl.createShader(type);gl.shaderSource(s,src);gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))throw gl.getShaderInfoLog(s);return s;}
+const prog=gl.createProgram();gl.attachShader(prog,sh(gl.VERTEX_SHADER,V));gl.attachShader(prog,sh(gl.FRAGMENT_SHADER,F));
+gl.linkProgram(prog);if(!gl.getProgramParameter(prog,gl.LINK_STATUS))throw gl.getProgramInfoLog(prog);
+gl.useProgram(prog);
+const buf=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,buf);
+gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]),gl.STATIC_DRAW);
+const loc=gl.getAttribLocation(prog,"p");gl.enableVertexAttribArray(loc);gl.vertexAttribPointer(loc,2,gl.FLOAT,false,0,0);
+const ur=gl.getUniformLocation(prog,"r"),ut=gl.getUniformLocation(prog,"t"),uMood=gl.getUniformLocation(prog,"mood");
+let mood=0,dp=1,paused=false;
 
-let W=0,H=0,DPR=1;
+// iOS/Safari 适配：用 visualViewport + 限制 DPR + 处理后台暂停
 function resize(){
-  DPR=Math.min(devicePixelRatio||1,2);
-  W=innerWidth;H=innerHeight;
-  C.width=(W*DPR)|0; C.height=(H*DPR)|0;
-  C.style.width=W+"px"; C.style.height=H+"px";
-  ctx.setTransform(DPR,0,0,DPR,0,0);
+  const vw=visualViewport?visualViewport.width:innerWidth;
+  const vh=visualViewport?visualViewport.height:innerHeight;
+  dp=Math.min(2,devicePixelRatio||1);
+  c.width=Math.max(1,Math.floor(vw*dp));
+  c.height=Math.max(1,Math.floor(vh*dp));
+  gl.viewport(0,0,c.width,c.height);
+  gl.uniform2f(ur,c.width,c.height);
 }
-addEventListener("resize",resize,{passive:true});resize();
+addEventListener("resize",resize,{passive:true});
+visualViewport && visualViewport.addEventListener("resize",resize,{passive:true});
+resize();
 
-// ===== 5秒一个“背景周期” =====
-const PERIOD = 5.0; // 秒
+function setPaused(x){paused=x;}
+document.addEventListener("visibilitychange",()=>setPaused(document.hidden),{passive:true});
 
-// ===== 确定性 RNG（每个周期生成一套基底）=====
-function rand(seed){return ()=>((seed=(seed*1664525+1013904223)>>>0)&0xfffffff)/0xfffffff;}
-function makeBase(seed){
-  const r=rand(seed>>>0);
-  return {
-    gx:0.40+0.20*r(),
-    gy:0.40+0.20*r(),
-    warm0:0.010+0.030*r(),
-    deep:0.050+0.020*r(),
-    air: 0.10+0.08*r(),
-    // 让动态“非周期”一点：每套背景的相位不同
-    p1: r()*6.28318,
-    p2: r()*6.28318,
-    p3: r()*6.28318
-  };
-}
+gl.uniform1i(uMood,mood);
+function tap(){mood=(mood+1)%4;gl.uniform1i(uMood,mood);}
+addEventListener("touchstart",e=>{e.preventDefault();tap();},{passive:false});
+addEventListener("click",tap,{passive:true});
 
-// 固定暖中性调色盘（调试版先锁死）
-const P={top:[252,248,242], mid:[238,224,204], low:[214,182,140], ink:[28,22,18]};
-const ease=x=>x*x*(3-2*x);
-
-// 给定：基底 base + 本周期内时间 tau（0..PERIOD），得到“实时状态参数”
-function stateAt(base, tau){
-  // 用互不相关的慢正弦叠加，避免“扫光/节奏感”
-  const u = Math.sin(tau*0.85 + base.p1) + 0.7*Math.sin(tau*1.21 + base.p2) + 0.4*Math.sin(tau*1.73 + base.p3);
-  const v = Math.cos(tau*0.77 + base.p2) + 0.6*Math.cos(tau*1.31 + base.p3) + 0.35*Math.cos(tau*1.91 + base.p1);
-  const w = Math.sin(tau*0.62 + base.p3) + 0.5*Math.sin(tau*1.19 + base.p1);
-
-  const du = (u/2.1)*0.1; // 控制中心漂移幅度
-  const dv = (v/2.1)*0.1;
-  const br = 1 + (w/2.0)*0.02; // 色温和光影呼吸
-
-  return {
-    gx: clamp(base.gx + du*0.55, 0.30, 0.70),
-    gy: clamp(base.gy + dv*0.55, 0.30, 0.70),
-    warm: base.warm0 + (u/2.2)*0.04,
-    deep: base.deep,
-    air:  base.air,
-    br
-  };
-}
-
-function drawField(state,x0,w){
-  const gx=x0 + w*state.gx;
-  const gy=H*state.gy;
-  const base=ctx.createRadialGradient(gx,gy, Math.min(w,H)*0.07, gx,gy, Math.max(w,H)*1.05);
-
-  base.addColorStop(0, rgb(mix3(P.top,[255,255,255],state.warm)));
-  base.addColorStop(0.48, rgb(P.mid));
-  base.addColorStop(1, rgb(mix3(P.low,P.ink,state.deep)));
-  ctx.fillStyle=base;
-  ctx.fillRect(x0,0,w,H);
-
-  // 玉石质感：微微的表面波动和反射（增加质感）
-  ctx.save();
-  ctx.globalCompositeOperation="overlay";
-  const stoneGrain=ctx.createRadialGradient(gx, gy, 0, gx, gy, Math.max(W,H));
-  stoneGrain.addColorStop(0, "rgba(255,255,255,0.08)");
-  stoneGrain.addColorStop(1, "rgba(0,0,0,0)");
-  ctx.fillStyle=stoneGrain;
-  ctx.fillRect(x0,0,w,H);
-  ctx.restore();
-
-  // air layer
-  ctx.save();
-  ctx.globalCompositeOperation="soft-light";
-  const air=ctx.createLinearGradient(0,0,0,H);
-  air.addColorStop(0, `rgba(255,252,248,${0.12*state.air*state.br})`);
-  air.addColorStop(0.55,"rgba(255,255,255,0)");
-  air.addColorStop(1, `rgba(0,0,0,${0.06*state.air*state.br})`);
-  ctx.fillStyle=air;
-  ctx.fillRect(x0,0,w,H);
-  ctx.restore();
-}
-
-// ===== 周期管理：每 5 秒生成一套 base，并冻结 snapshot =====
-let cycle=0;
-let base=makeBase(1);
-let snap=stateAt(base, 0); // t=0 固定快照
-let t0=performance.now();  // 全局时间
-let tCycleStart=t0;
-
-function tick(now){
-  requestAnimationFrame(tick);
-
-  // 检测是否进入新周期
-  const elapsed=(now-tCycleStart)*0.001;
-  if(elapsed>=PERIOD){
-    cycle++;
-    tCycleStart = now;
-    base = makeBase(1000 + cycle); // 换一套背景基底
-    snap = stateAt(base, 0);       // 新周期的 t=0 固定快照（左边）
+let t0=performance.now();
+(function loop(now){
+  if(!paused){
+    const tt=(now-t0)/1000;
+    gl.uniform1f(ut,tt);
+    gl.drawArrays(gl.TRIANGLES,0,6);
   }
-
-  const tau=(now-tCycleStart)*0.001;      // 本周期内时间
-  const live=stateAt(base, tau);          // 右边实时变化
-
-  const half=W*0.5;
-  drawField(snap, 0, half);               // 左：固定
-  drawField(live, half, half);            // 右：动态
-
-  // 中间调试辅助线
-  ctx.fillStyle="rgba(255,255,255,0.16)";
-  ctx.fillRect(half-0.5,0,1,H);
-  // 辅助线两侧再加一个很淡的“安全边界”，让眼睛更容易分区
-  ctx.fillStyle="rgba(0,0,0,0.10)";
-  ctx.fillRect(half-12,0,11,H);
-  ctx.fillRect(half+1,0,11,H);
-}
-requestAnimationFrame(tick);
+  requestAnimationFrame(loop);
+})(t0);
 })();
 </script>
+</html>
