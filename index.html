@@ -60,12 +60,12 @@ vec3 hsv2rgb(vec3 c){
   return c.z*mix(K.xxx,clamp(p-K.xxx,0.,1.),c.y);
 }
 vec3 warmPalette(float x){
-  // H.x ~ base warm hue; H.y ~ secondary warm; H.z ~ soft teal accent (kept small in mix)
+  // H.x base warm hue; H.y secondary warm; H.z soft teal accent (tiny)
   vec3 c1=hsv2rgb(vec3(H.x, 0.85, 1.0));
   vec3 c2=hsv2rgb(vec3(H.y, 0.80, 1.0));
   vec3 c3=hsv2rgb(vec3(H.z, 0.55, 1.0));
   vec3 col=mix(c1,c2,smoothstep(0.10,0.90,x));
-  col=mix(col,c3,smoothstep(0.78,0.98,x)*0.18); // teal only as highlight seasoning
+  col=mix(col,c3,smoothstep(0.78,0.98,x)*0.18);
   return col;
 }
 void main(){
@@ -75,7 +75,7 @@ void main(){
   vec2 cam=vec2(sin(t*0.06),cos(t*0.05))*0.12*(0.30+0.70*B.w);
   uv += cam;
 
-  // gentle domain warp (healing, not chaotic)
+  // gentle domain warp
   vec2 p=uv;
   float w1=fbm(p*(1.2+2.0*A.x)+vec2(t*0.09,-t*0.07));
   float w2=fbm(p*(1.8+2.6*A.y)+vec2(-t*0.05,t*0.10));
@@ -83,7 +83,6 @@ void main(){
 
   float r=length(p)+1e-4, ang=atan(p.y,p.x);
 
-  // structures tuned for “soft, expensive”
   float veins = fbm(p*(2.8+5.0*C.x) + vec2(t*0.10,-t*0.08));
   float mist  = fbm(p*(1.1+2.8*C.y) - vec2(t*0.04,t*0.03));
   float bands = sin((r*(6.5+10.0*B.x)-t*(1.0+1.2*B.y)) + ang*(2.0+4.0*B.z));
@@ -94,25 +93,19 @@ void main(){
 
   vec3 col = warmPalette(field);
 
-  // warm glow + soft bloom
   float glow = pow(field,2.0)*(0.30+0.90*B.w) + core*(0.55+0.65*A.w);
   col += col*glow*(0.55+0.75*A.y);
 
-  // filmic curve
   col = col/(1.0+col);
-  col = pow(col, vec3(0.95+0.10*C.y)); // warm-friendly gamma
+  col = pow(col, vec3(0.95+0.10*C.y));
 
-  // vignette
   float vig = smoothstep(1.20,0.20,length(uv));
   col *= (0.78+0.45*vig);
 
-  // subtle grain (luma-ish)
   float g = hash(gl_FragCoord.xy + vec2(T*55.0, T*33.0));
   col += (g-0.5) * (0.012+0.012*(1.0-vig)) * (0.35+0.65*C.x);
 
-  // adaptive Q: small contrast bump if downscaled
   col = mix(col, col*1.04, clamp((1.0-Q)*1.0,0.,0.5));
-
   gl_FragColor=vec4(col,1.0);
 }`;
 
@@ -138,8 +131,9 @@ function build(){
 }
 build();
 
-// ---- Offscreen preview FBO for scoring (tiny, fast) ----
+// ---- Offscreen preview FBO for scoring ----
 const PRE=64;
+let scoringOK=true;
 const fbo=gl.createFramebuffer();
 const tex=gl.createTexture();
 gl.bindTexture(gl.TEXTURE_2D,tex);
@@ -150,11 +144,11 @@ gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
 gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
 gl.bindFramebuffer(gl.FRAMEBUFFER,fbo);
 gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,tex,0);
+if(gl.checkFramebufferStatus(gl.FRAMEBUFFER)!==gl.FRAMEBUFFER_COMPLETE) scoringOK=false;
 gl.bindFramebuffer(gl.FRAMEBUFFER,null);
 const pix=new Uint8Array(PRE*PRE*4);
 
 // ---- Controlled warm random generator ----
-// hues in 0..1; warm base around 25°..55°, secondary around 10°..30°, teal accent around 175°..200° tiny
 const rnd=()=>Math.random();
 function genParams(){
   const hBase = lerp(25/360, 55/360, Math.pow(rnd(),0.7));
@@ -162,12 +156,12 @@ function genParams(){
   const hTeal = lerp(175/360, 200/360, rnd());
   const A=[rnd(),rnd(), 0.18+0.52*rnd(), 0.62+0.35*rnd()];
   const B=[0.22+0.60*rnd(), 0.25+0.55*rnd(), 0.10+0.65*rnd(), 0.55+0.45*rnd()];
-  const C=[0.28+0.62*rnd(), 0.22+0.62*rnd(), 0.24+0.70*rnd(), 0]; // C.w unused in this shader, keep 0
+  const C=[0.28+0.62*rnd(), 0.22+0.62*rnd(), 0.24+0.70*rnd(), 0];
   const H=[hBase,h2,hTeal];
   return {A,B,C,H};
 }
 
-// ---- Aesthetic scoring (高级但仍然便宜) ----
+// ---- Scoring ----
 function rgb2hsv(r,g,b){
   const mx=Math.max(r,g,b), mn=Math.min(r,g,b), d=mx-mn;
   let h=0;
@@ -183,148 +177,123 @@ function rgb2hsv(r,g,b){
 function scorePixels(){
   let n=PRE*PRE, lumSum=0, lum2=0, satSum=0, warm=0, purple=0, dark=0, hot=0, teal=0;
   let grad=0, hiFreq=0;
-  // first pass: stats
-  for(let y=0;y<PRE;y++){
-    for(let x=0;x<PRE;x++){
-      const i=(y*PRE+x)*4;
-      const r=pix[i]/255, g=pix[i+1]/255, b=pix[i+2]/255;
-      const lum=0.2126*r+0.7152*g+0.0722*b;
-      lumSum+=lum; lum2+=lum*lum;
-      const [h,s,v]=rgb2hsv(r,g,b);
-      satSum+=s;
+  for(let y=0;y<PRE;y++)for(let x=0;x<PRE;x++){
+    const i=(y*PRE+x)*4;
+    const r=pix[i]/255, g=pix[i+1]/255, b=pix[i+2]/255;
+    const lum=0.2126*r+0.7152*g+0.0722*b;
+    lumSum+=lum; lum2+=lum*lum;
+    const hsv=rgb2hsv(r,g,b), h=hsv[0], s=hsv[1];
+    satSum+=s;
 
-      // warm band: ~15°..70° plus some peach: ~0°..15°
-      if((h>=0 && h<15/360) || (h>=15/360 && h<=70/360)) warm+=1;
+    if((h>=0 && h<15/360) || (h>=15/360 && h<=70/360)) warm++;
+    if(h>=255/360 && h<=330/360) purple++;
+    if(h>=165/360 && h<=210/360) teal++;
 
-      // purple/magenta (ugly for “治愈暖”): ~255°..330° (0.708..0.916)
-      if(h>=255/360 && h<=330/360) purple+=1;
+    if(lum<0.10) dark++;
+    if(lum>0.92 && s>0.55) hot++;
 
-      // teal accent (allowed but should be small): ~165°..210°
-      if(h>=165/360 && h<=210/360) teal+=1;
-
-      if(lum<0.10) dark+=1;
-      if(lum>0.92 && s>0.55) hot+=1;
-
-      // gradient energy (texture finesse): use neighbor diffs
-      if(x>0){
-        const j=i-4;
-        const dr=r-pix[j]/255, dg=g-pix[j+1]/255, db=b-pix[j+2]/255;
-        const dL=Math.abs(0.2126*dr+0.7152*dg+0.0722*db);
-        grad+=dL;
-        if(dL>0.20) hiFreq+=1;
-      }
-      if(y>0){
-        const j=i-PRE*4;
-        const dr=r-pix[j]/255, dg=g-pix[j+1]/255, db=b-pix[j+2]/255;
-        const dL=Math.abs(0.2126*dr+0.7152*dg+0.0722*db);
-        grad+=dL;
-        if(dL>0.20) hiFreq+=1;
-      }
+    if(x>0){
+      const j=i-4;
+      const dr=r-pix[j]/255, dg=g-pix[j+1]/255, db=b-pix[j+2]/255;
+      const dL=Math.abs(0.2126*dr+0.7152*dg+0.0722*db);
+      grad+=dL; if(dL>0.20) hiFreq++;
+    }
+    if(y>0){
+      const j=i-PRE*4;
+      const dr=r-pix[j]/255, dg=g-pix[j+1]/255, db=b-pix[j+2]/255;
+      const dL=Math.abs(0.2126*dr+0.7152*dg+0.0722*db);
+      grad+=dL; if(dL>0.20) hiFreq++;
     }
   }
-  const lumMean=lumSum/n;
-  const lumVar=Math.max(0, lum2/n - lumMean*lumMean);
-  const lumStd=Math.sqrt(lumVar);
+  const lumMean=lumSum/n, lumVar=Math.max(0, lum2/n - lumMean*lumMean), lumStd=Math.sqrt(lumVar);
   const satMean=satSum/n;
-
   const warmP=warm/n, purpleP=purple/n, darkP=dark/n, hotP=hot/n, tealP=teal/n;
-  const gradMean=grad/(n*2); // rough normalize
-  const hiFreqP=hiFreq/(n*2);
+  const gradMean=grad/(n*2), hiFreqP=hiFreq/(n*2);
 
-  // --- scoring (0..100) ---
-  // goals: warm dominance, medium luminance, medium contrast, medium saturation, low purple, low black blocks, low harsh high-freq
   let score=0;
-
-  // Warm dominance
   score += 42 * clamp((warmP-0.55)/0.35, 0, 1);
-
-  // Luminance target around 0.55 (soft warm daylight)
   score += 18 * Math.exp(-Math.pow((lumMean-0.55)/0.18,2));
-
-  // Contrast target (std) around 0.20 (not flat, not harsh)
   score += 10 * Math.exp(-Math.pow((lumStd-0.20)/0.10,2));
-
-  // Saturation target around 0.45 (healing but not dull)
   score += 10 * Math.exp(-Math.pow((satMean-0.45)/0.18,2));
-
-  // Penalize purple/magenta heavily
   score -= 55 * clamp((purpleP-0.02)/0.06, 0, 1);
-
-  // Penalize too much darkness
   score -= 25 * clamp((darkP-0.08)/0.18, 0, 1);
-
-  // Penalize blown neon hot spots (cheap look)
   score -= 18 * clamp((hotP-0.03)/0.10, 0, 1);
-
-  // Teal should be seasoning, not a flood
   score -= 12 * clamp((tealP-0.16)/0.20, 0, 1);
-
-  // Texture finesse: reward some gradient but punish harsh hi-freq noise
-  score += 8 * clamp((gradMean-0.03)/0.05, 0, 1);
+  score += 8  * clamp((gradMean-0.03)/0.05, 0, 1);
   score -= 16 * clamp((hiFreqP-0.01)/0.06, 0, 1);
-
-  return clamp(score, 0, 100);
+  return clamp(score,0,100);
 }
 
+// ---- Preview render (FIXED: restores viewport + framebuffer, preventing the “tiny corner” bug) ----
 function renderPreview(params){
+  if(!scoringOK) return;
+  const prevFbo=gl.getParameter(gl.FRAMEBUFFER_BINDING);
+  const prevVp =gl.getParameter(gl.VIEWPORT);
+
   gl.bindFramebuffer(gl.FRAMEBUFFER,fbo);
   gl.viewport(0,0,PRE,PRE);
+
   gl.useProgram(prog);
   gl.uniform2f(loc.R, PRE, PRE);
-  gl.uniform1f(loc.T, 1.37); // fixed time snapshot for evaluation
+  gl.uniform1f(loc.T, 1.37);
   gl.uniform4f(loc.A, params.A[0],params.A[1],params.A[2],params.A[3]);
   gl.uniform4f(loc.B, params.B[0],params.B[1],params.B[2],params.B[3]);
   gl.uniform4f(loc.C, params.C[0],params.C[1],params.C[2],params.C[3]);
   gl.uniform3f(loc.H, params.H[0],params.H[1],params.H[2]);
   gl.uniform1f(loc.Q, 1.0);
   gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
+
   gl.readPixels(0,0,PRE,PRE,gl.RGBA,gl.UNSIGNED_BYTE,pix);
-  gl.bindFramebuffer(gl.FRAMEBUFFER,null);
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER,prevFbo);
+  gl.viewport(prevVp[0],prevVp[1],prevVp[2],prevVp[3]);
 }
 
 function findGoodCandidate(maxTry=10, threshold=72){
+  if(!scoringOK){
+    const p=genParams(); p._score=0; return p;
+  }
   let best=null, bestScore=-1;
   for(let i=0;i<maxTry;i++){
     const p=genParams();
     renderPreview(p);
     const sc=scorePixels();
     if(sc>bestScore){bestScore=sc; best=p; best._score=sc;}
-    if(sc>=threshold) return best; // early accept
+    if(sc>=threshold) return best;
   }
-  return best; // fallback best-effort
+  return best;
 }
 
 // ---- Runtime rendering ----
 let W=0,H=0,dpr=1,scale=1,ema=60;
-let cur=findGoodCandidate(8,74), next=null, t0=performance.now(), last=performance.now();
-
-// adaptive targets
 const target = mobile ? 60 : 90;
 
-// main resize
+let cur=findGoodCandidate(8,74), next=null, t0=performance.now(), last=performance.now();
+
 function resize(){
   dpr=clamp(devicePixelRatio||1,1,mobile?2.0:2.6);
   W=innerWidth; H=innerHeight;
-  canvas.width=Math.floor(W*dpr*scale);
-  canvas.height=Math.floor(H*dpr*scale);
+  const cw=Math.max(2,Math.floor(W*dpr*scale));
+  const ch=Math.max(2,Math.floor(H*dpr*scale));
+  canvas.width=cw; canvas.height=ch;
   canvas.style.width=W+"px"; canvas.style.height=H+"px";
-  gl.viewport(0,0,canvas.width,canvas.height);
+  gl.viewport(0,0,cw,ch);
 }
 addEventListener("resize",resize,{passive:true}); resize();
 
 function apply(p){cur=p; t0=performance.now();}
 
 function scheduleNext(){
-  // “立刻开始算下一套”：分片做，避免卡顿
+  if(!scoringOK){ next=genParams(); next._score=0; return; }
   let tries=0, best=null, bestScore=-1;
   const step=()=>{
-    // 每次只做少量尝试，iOS 更稳
-    const batch=2;
+    const batch=2; // small batches to avoid iOS stutter
     for(let k=0;k<batch;k++){
       const p=genParams();
       renderPreview(p);
       const sc=scorePixels();
-      tries++; if(sc>bestScore){bestScore=sc; best=p; best._score=sc;}
+      tries++;
+      if(sc>bestScore){bestScore=sc; best=p; best._score=sc;}
       if(sc>=76 || tries>=14){ next=best; return; }
     }
     setTimeout(step,0);
@@ -334,20 +303,13 @@ function scheduleNext(){
 
 function switchNow(){
   if(next){apply(next); next=null; scheduleNext();}
-  else { // 若还没算完，先用当前再启动一次
-    apply(findGoodCandidate(6,74));
-    scheduleNext();
-  }
-  // reset minute timer
+  else {apply(findGoodCandidate(6,74)); scheduleNext();}
   clearInterval(auto); auto=setInterval(()=>switchNow(),60*1000);
 }
 
 BTN.onclick=switchNow;
 
-// auto switch every minute
 let auto=setInterval(()=>switchNow(),60*1000);
-
-// kick off precompute immediately
 scheduleNext();
 
 function draw(now){
@@ -355,7 +317,6 @@ function draw(now){
   const dt=now-last; last=now;
   const fps=1000/(dt||16.7); ema=ema*0.92+fps*0.08;
 
-  // adaptive scale (prefer high-res “3A”, but keep smooth)
   if(ema<target*0.92) scale=clamp(scale*0.985, 0.78, 1.0);
   if(ema>target*1.03) scale=clamp(scale*1.003, 0.78, 1.0);
   if((now|0)%250<dt && Math.abs(canvas.width-(W*dpr*scale))>2) resize();
