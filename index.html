@@ -39,7 +39,6 @@
   const c = document.getElementById("c");
   const errorMessageElement = document.getElementById("errorMessage");
 
-  // Initialize WebGL context
   const gl = c.getContext("webgl", { antialias: true, alpha: false });
   if (!gl) {
     showErrorMessage("WebGL not supported.");
@@ -72,19 +71,19 @@
   uniform float t;
 
   // ----------------- Hash & Noise -----------------
-  float hash11(float n){ return fract(sin(n)*43758.5453123); }
-  float hash31(vec3 p){ return hash11(dot(p, vec3(127.1,311.7,74.7))); }
-  float noise3(vec3 p){
+  float hash11(float n) { return fract(sin(n) * 43758.5453123); }
+  float hash31(vec3 p) { return hash11(dot(p, vec3(127.1, 311.7, 74.7))); }
+  float noise3(vec3 p) {
     vec3 i = floor(p), f = fract(p);
     f = f * f * (3.0 - 2.0 * f);
-    float n000 = hash31(i + vec3(0, 0, 0));
-    float n100 = hash31(i + vec3(1, 0, 0));
-    float n010 = hash31(i + vec3(0, 1, 0));
-    float n110 = hash31(i + vec3(1, 1, 0));
-    float n001 = hash31(i + vec3(0, 0, 1));
-    float n101 = hash31(i + vec3(1, 0, 1));
-    float n011 = hash31(i + vec3(0, 1, 1));
-    float n111 = hash31(i + vec3(1, 1, 1));
+    float n000 = hash31(i + vec3(0.0, 0.0, 0.0));
+    float n100 = hash31(i + vec3(1.0, 0.0, 0.0));
+    float n010 = hash31(i + vec3(0.0, 1.0, 0.0));
+    float n110 = hash31(i + vec3(1.0, 1.0, 0.0));
+    float n001 = hash31(i + vec3(0.0, 0.0, 1.0));
+    float n101 = hash31(i + vec3(1.0, 0.0, 1.0));
+    float n011 = hash31(i + vec3(0.0, 1.0, 1.0));
+    float n111 = hash31(i + vec3(1.0, 1.0, 1.0));
     float nx00 = mix(n000, n100, f.x);
     float nx10 = mix(n010, n110, f.x);
     float nx01 = mix(n001, n101, f.x);
@@ -95,7 +94,7 @@
   }
 
   // ----------------- Cloud Density Field -----------------
-  float fbm3(vec3 p){
+  float fbm3(vec3 p) {
     float v = 0.0, a = 0.58;
     for (int i = 0; i < 6; i++) {
       v += a * noise3(p);
@@ -106,7 +105,7 @@
   }
 
   // Cloud Density Function with Height Influence
-  float cloudField(vec3 P){
+  float cloudField(vec3 P) {
     float base = fbm3(P * 0.55);
     float detail = fbm3(P * 2.2);
     vec3 warp = vec3(
@@ -122,59 +121,105 @@
   }
 
   // ----------------- Multiple Scattering Approximation -----------------
-  vec3 multiScatterApprox(vec3 single, float density, float TrL){
+  vec3 multiScatterApprox(vec3 single, float density, float TrL) {
     float ms = 1.0 - exp(-density * 2.5);
     return single * (1.0 + ms * 0.6) * (0.7 + 0.3 * TrL);
   }
 
   // ----------------- Light and Shadow -----------------
-  float lightTransmittance(vec3 p, vec3 L){
+  float lightTransmittance(vec3 p, vec3 L) {
     float Tr = 1.0;
     const int LS = 24;
     float stepLen = 0.085;
     for (int i = 0; i < LS; i++) {
-      p += L * stepLen;
-      float d = cloudField(p);
-      Tr *= exp(-d * 1.35 * stepLen * 6.5);
-      if (Tr < 0.02) break;
+        p += L * stepLen;
+        float d = cloudField(p);
+        Tr *= exp(-d * 1.35 * stepLen * 6.5);
+        if (Tr < 0.02) break;
     }
     return clamp(Tr, 0.0, 1.0);
   }
 
   // ----------------- Tone Mapping -----------------
-  vec3 tonemap(vec3 x){
+  vec3 tonemap(vec3 x) {
     x = max(x, vec3(0.0));
     return (x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14);
   }
 
-  function handleError(message) {
-    showErrorMessage(message);
+  // Shader Program Compilation and Linking
+  const vertexShader = gl.createShader(gl.VERTEX_SHADER);
+  gl.shaderSource(vertexShader, V);
+  gl.compileShader(vertexShader);
+  if (!gl.getShaderParameter(vertexShader, gl.COMPILE_STATUS)) {
+    showErrorMessage("Vertex shader compilation failed: " + gl.getShaderInfoLog(vertexShader));
+    return;
   }
+
+  const fragmentShader = gl.createShader(gl.FRAGMENT_SHADER);
+  gl.shaderSource(fragmentShader, F);
+  gl.compileShader(fragmentShader);
+  if (!gl.getShaderParameter(fragmentShader, gl.COMPILE_STATUS)) {
+    showErrorMessage("Fragment shader compilation failed: " + gl.getShaderInfoLog(fragmentShader));
+    return;
+  }
+
+  const shaderProgram = gl.createProgram();
+  gl.attachShader(shaderProgram, vertexShader);
+  gl.attachShader(shaderProgram, fragmentShader);
+  gl.linkProgram(shaderProgram);
+  if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
+    showErrorMessage("Shader program linking failed.");
+    return;
+  }
+  gl.useProgram(shaderProgram);
+
+  // Set WebGL clear color
+  gl.clearColor(0.93, 0.96, 1.0, 1.0); // Set background color (light blue)
+
+  const positionLocation = gl.getAttribLocation(shaderProgram, "p");
+  const rLocation = gl.getUniformLocation(shaderProgram, "r");
+  const tLocation = gl.getUniformLocation(shaderProgram, "t");
+
+  // Set uniform values
+  gl.uniform2fv(rLocation, [c.width, c.height]);
+  gl.uniform1f(tLocation, performance.now() / 1000);
 
   function renderClouds() {
     try {
-      const p = gl.getParameter(gl.VERSION);
-      if (!p) throw new Error("WebGL error: Unable to get WebGL version.");
-
       gl.clear(gl.COLOR_BUFFER_BIT);
-      // continue rendering clouds...
+
+      // Setup vertex data and draw
+      const vertices = new Float32Array([
+        -1.0, -1.0,
+        1.0, -1.0,
+        0.0, 1.0,
+        -1.0, -1.0,
+        0.0, 1.0,
+        1.0, -1.0
+      ]);
+
+      const buffer = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+      gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+      gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
+      gl.enableVertexAttribArray(positionLocation);
+
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
     } catch (error) {
-      handleError("Rendering failed: " + error.message);
+      showErrorMessage("Rendering failed: " + error.message);
     }
   }
 
-  // -------- Main Render Loop --------
   function mainLoop() {
     try {
       renderClouds();
     } catch (error) {
-      handleError("Rendering failed: " + error.message);
+      showErrorMessage("Rendering failed: " + error.message);
     }
     requestAnimationFrame(mainLoop);
   }
 
   mainLoop(); // start rendering loop
-
 })();
 </script>
 </html>
