@@ -2,147 +2,154 @@
 <html lang="zh">
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
-<title>Soft White Clouds</title>
-
+<title>Better White Clouds</title>
 <style>
-html,body{
-  margin:0;
-  height:100%;
-  overflow:hidden;
-  background:#eaf4ff;
-}
-canvas{
-  position:fixed;
-  inset:0;
-  width:100%;
-  height:100%;
-  display:block;
-}
+  html,body{margin:0;height:100%;overflow:hidden;background:#eaf4ff}
+  canvas{position:fixed;inset:0;width:100%;height:100%;display:block}
 </style>
-
 <canvas id="c"></canvas>
 
 <script>
-(()=>{
+(()=> {
+  const c=document.getElementById("c");
+  const gl=c.getContext("webgl",{antialias:false,alpha:false});
+  if(!gl) return;
 
-const c = document.getElementById("c");
-const gl = c.getContext("webgl",{antialias:false,alpha:false});
-if(!gl) return;
+  const V=`attribute vec2 p;void main(){gl_Position=vec4(p,0.,1.);}`;
+  const F=`precision highp float;
+  uniform vec2 r; uniform float t;
 
-const V = `attribute vec2 p;void main(){gl_Position=vec4(p,0.,1.);}`;
-
-const F = `precision highp float;
-uniform vec2 r;
-uniform float t;
-
-/* noise */
-float h(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
-float n(vec2 p){
-  vec2 i=floor(p),f=fract(p);
-  f=f*f*(3.-2.*f);
-  return mix(
-    mix(h(i),h(i+vec2(1,0)),f.x),
-    mix(h(i+vec2(0,1)),h(i+vec2(1,1)),f.x),
-    f.y
-  );
-}
-float fbm(vec2 p){
-  float v=0.,a=.6;
-  for(int i=0;i<5;i++){
-    v+=a*n(p);
-    p=p*1.9+17.7;
-    a*=.55;
+  float hash(vec2 p){ return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453123); }
+  float noise(vec2 p){
+    vec2 i=floor(p), f=fract(p); f=f*f*(3.-2.*f);
+    float a=hash(i), b=hash(i+vec2(1,0)), c=hash(i+vec2(0,1)), d=hash(i+vec2(1,1));
+    return mix(mix(a,b,f.x), mix(c,d,f.x), f.y);
   }
-  return v;
-}
+  float fbm(vec2 p){
+    float v=0., a=.58;
+    for(int i=0;i<6;i++){ v+=a*noise(p); p=p*1.95+19.7; a*=.52; }
+    return v;
+  }
 
-void main(){
-  vec2 uv = gl_FragCoord.xy / r;
-  vec2 p = uv*2.0-1.0;
-  p.x *= r.x/r.y;
+  // 轻微抖动，iOS 上减少天空渐变 banding
+  float dither(vec2 p){
+    return (hash(p+fract(t))*2.0-1.0)/255.0;
+  }
 
-  /* sky gradient */
-  vec3 skyTop = vec3(0.80,0.90,1.00);
-  vec3 skyBot = vec3(0.94,0.97,1.00);
-  vec3 sky = mix(skyBot, skyTop, smoothstep(-1.0,1.0,p.y));
+  void main(){
+    vec2 uv = gl_FragCoord.xy / r;
+    vec2 p = uv*2.0 - 1.0;
+    p.x *= r.x/r.y;
 
-  /* slow evolving cloud field (not sliding) */
-  float t1 = t*0.04;
-  float base = fbm(p*0.9 + vec2(0.0,t1));
-  float shape = fbm(p*1.6 + vec2(t1*0.3,-t1*0.2));
-  float detail = fbm(p*3.2 - vec2(t1*0.6,0.0));
+    // 更真实的天空：上方更深一点点
+    vec3 skyTop = vec3(0.72,0.87,1.00);
+    vec3 skyMid = vec3(0.86,0.93,1.00);
+    vec3 skyBot = vec3(0.95,0.97,1.00);
+    float gy = smoothstep(-1.0, 1.0, p.y);
+    vec3 sky = mix(skyBot, skyMid, smoothstep(0.0,0.55,gy));
+    sky = mix(sky,   skyTop, smoothstep(0.55,1.0,gy));
+    sky += dither(gl_FragCoord.xy)*vec3(1.0); // 去条纹
 
-  float density = base*0.6 + shape*0.3 + detail*0.1;
+    // 云的“演化”而不是整张平移：三个时间相位
+    float tt = t*0.035;
+    vec2 a = vec2( tt*0.7,  tt*0.35);
+    vec2 b = vec2(-tt*0.5,  tt*0.25);
+    vec2 c0= vec2( tt*0.25,-tt*0.45);
 
-  /* critical: low coverage */
-  float cloud = smoothstep(0.58, 0.72, density);
+    // 让云更“大朵”：基底尺度更低频
+    vec2 q = p * 0.75;
 
-  /* cloud thickness */
-  float soft = fbm(p*4.5 + t1);
-  cloud *= smoothstep(0.3,0.7,soft);
+    // 域扭曲：制造团块与卷动（比你现在更像云）
+    float w1 = fbm(q*1.2 + a);
+    float w2 = fbm(q*2.0 + b);
+    q += 0.28 * vec2(w1-0.5, w2-0.5);
 
-  /* cloud color */
-  float light = 0.95 + 0.05*detail;
-  vec3 cloudCol = vec3(1.0,0.995,0.985) * light;
+    // 多层密度：低频(团) + 中频(形) + 高频(蓬松边)
+    float d0 = fbm(q*0.9  + a);
+    float d1 = fbm(q*1.8  + b);
+    float d2 = fbm(q*4.2  + c0);
 
-  /* edge softness */
-  cloud = smoothstep(0.0,1.0,cloud);
-  cloud = pow(cloud,1.3);
+    float dens = d0*0.62 + d1*0.28 + d2*0.10;
 
-  /* composite */
-  vec3 col = mix(sky, cloudCol, cloud);
+    // 控制覆盖率：让天空留白，但云更“成型”
+    float cloud = smoothstep(0.60, 0.78, dens);
+    cloud = pow(cloud, 1.35); // 提升云芯
 
-  gl_FragColor = vec4(col,1.0);
-}
-`;
+    // 边缘“纤维感”：只加在边缘附近（避免整片糊）
+    float edgeNoise = fbm(q*7.5 + b);
+    float edge = smoothstep(0.15, 0.85, edgeNoise);
+    float rim = smoothstep(0.15, 0.55, cloud) * (1.0 - smoothstep(0.55, 0.95, cloud));
+    cloud *= 0.92 + 0.16 * edge * rim;
 
-function sh(t,s){
-  const x=gl.createShader(t);
-  gl.shaderSource(x,s);
-  gl.compileShader(x);
-  return x;
-}
+    // 云的厚薄明暗（非常轻，不会变乌云）
+    float thickness = clamp(cloud, 0.0, 1.0);
+    float shade = 0.96 + 0.06*(d2-0.5);          // 内部微起伏
+    float under = 1.0 - 0.08*(1.0-thickness);    // 下方略“厚”
+    shade = clamp(shade*under, 0.90, 1.03);
 
-const P=gl.createProgram();
-gl.attachShader(P,sh(gl.VERTEX_SHADER,V));
-gl.attachShader(P,sh(gl.FRAGMENT_SHADER,F));
-gl.linkProgram(P);
-gl.useProgram(P);
+    // 白云颜色：偏暖一点点更柔和
+    vec3 cloudCol = vec3(1.0, 0.997, 0.990) * shade;
 
-const buf=gl.createBuffer();
-gl.bindBuffer(gl.ARRAY_BUFFER,buf);
-gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([
-  -1,-1, 1,-1, -1,1,
-  -1,1, 1,-1, 1,1
-]),gl.STATIC_DRAW);
+    // 银边高光（轻微）：让云看起来更“蓬”
+    float silver = smoothstep(0.70, 0.98, edgeNoise) * rim;
+    cloudCol = mix(cloudCol, vec3(1.0), 0.18*silver);
 
-const loc=gl.getAttribLocation(P,"p");
-gl.enableVertexAttribArray(loc);
-gl.vertexAttribPointer(loc,2,gl.FLOAT,false,0,0);
+    // 合成：稍微增强云的不透明度（你现在还是偏淡）
+    vec3 col = mix(sky, cloudCol, clamp(cloud*1.35, 0.0, 1.0));
 
-const ur=gl.getUniformLocation(P,"r");
-const ut=gl.getUniformLocation(P,"t");
+    col = clamp(col, 0.0, 1.0);
+    col = pow(col, vec3(0.99));
+    gl_FragColor = vec4(col, 1.0);
+  }`;
 
-function resize(){
-  const d=Math.min(2,devicePixelRatio||1);
-  const vw=visualViewport?visualViewport.width:innerWidth;
-  const vh=visualViewport?visualViewport.height:innerHeight;
-  c.width=vw*d;
-  c.height=vh*d;
-  gl.viewport(0,0,c.width,c.height);
-  gl.uniform2f(ur,c.width,c.height);
-}
-addEventListener("resize",resize,{passive:true});
-visualViewport&&visualViewport.addEventListener("resize",resize,{passive:true});
-resize();
+  function sh(type,src){
+    const s=gl.createShader(type);
+    gl.shaderSource(s,src);
+    gl.compileShader(s);
+    if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)) throw gl.getShaderInfoLog(s);
+    return s;
+  }
 
-let t0=performance.now();
-(function loop(now){
-  gl.uniform1f(ut,(now-t0)/1000);
-  gl.drawArrays(gl.TRIANGLES,0,6);
-  requestAnimationFrame(loop);
-})(t0);
+  const P=gl.createProgram();
+  gl.attachShader(P,sh(gl.VERTEX_SHADER,V));
+  gl.attachShader(P,sh(gl.FRAGMENT_SHADER,F));
+  gl.linkProgram(P);
+  if(!gl.getProgramParameter(P,gl.LINK_STATUS)) throw gl.getProgramInfoLog(P);
+  gl.useProgram(P);
 
+  const buf=gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER,buf);
+  gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]),gl.STATIC_DRAW);
+  const loc=gl.getAttribLocation(P,"p");
+  gl.enableVertexAttribArray(loc);
+  gl.vertexAttribPointer(loc,2,gl.FLOAT,false,0,0);
+
+  const ur=gl.getUniformLocation(P,"r");
+  const ut=gl.getUniformLocation(P,"t");
+
+  function resize(){
+    const d=Math.min(2,devicePixelRatio||1);
+    const vw=visualViewport?visualViewport.width:innerWidth;
+    const vh=visualViewport?visualViewport.height:innerHeight;
+    c.width=Math.max(1,Math.floor(vw*d));
+    c.height=Math.max(1,Math.floor(vh*d));
+    gl.viewport(0,0,c.width,c.height);
+    gl.uniform2f(ur,c.width,c.height);
+  }
+  addEventListener("resize",resize,{passive:true});
+  visualViewport && visualViewport.addEventListener("resize",resize,{passive:true});
+  resize();
+
+  let t0=performance.now(), paused=false;
+  document.addEventListener("visibilitychange",()=>paused=document.hidden,{passive:true});
+
+  (function loop(now){
+    if(!paused){
+      gl.uniform1f(ut,(now-t0)/1000);
+      gl.drawArrays(gl.TRIANGLES,0,6);
+    }
+    requestAnimationFrame(loop);
+  })(t0);
 })();
 </script>
 </html>
