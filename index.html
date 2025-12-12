@@ -1,6 +1,6 @@
 <!doctype html><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>Warm Healing Ambient</title>
+<title>Warm Healing — Curated & Scored</title>
 <style>
 html,body{margin:0;height:100%;overflow:hidden;background:#0b0605;font:12px ui-monospace,Menlo,Consolas,monospace}
 canvas{position:fixed;inset:0;display:block}
@@ -13,44 +13,72 @@ text-shadow:0 0 18px #ffbf6a55,0 0 30px #ff7aa822;white-space:nowrap;overflow:hi
 #btn{pointer-events:auto;padding:10px 14px;border-radius:14px;border:1px solid #fff2;background:#0006;color:#fff;
 backdrop-filter:blur(12px);box-shadow:0 0 0 1px #fff1 inset}
 #btn:active{transform:translateY(1px)}
-/* 极轻微扫线（可删），增强“真实屏幕质感”，但不会抢注意力 */
 body:before{content:"";position:fixed;inset:-60px;pointer-events:none;background:
-repeating-linear-gradient(0deg,rgba(255,255,255,.025),rgba(255,255,255,.025) 1px,transparent 2px,transparent 10px);
+repeating-linear-gradient(0deg,rgba(255,255,255,.02),rgba(255,255,255,.02) 1px,transparent 2px,transparent 10px);
 mix-blend-mode:overlay;opacity:.08;animation:scan 18s linear infinite}
 @keyframes scan{to{transform:translateY(60px)}}
 </style>
 
 <canvas id="bg"></canvas>
-<canvas id="grain"></canvas>
+<canvas id="fx"></canvas>
 
 <div id="ui">
-  <div id="pill"><b>WARM HEALING</b> · <span id="s">ambient</span></div>
+  <div id="pill"><b>WARM HEALING</b> · <span id="s">loading…</span></div>
   <button id="btn">切换</button>
 </div>
 
 <script>
 (()=>{"use strict";
-const bg=document.getElementById("bg"), g=document.getElementById("grain");
-const B=bg.getContext("2d",{alpha:false}), G=g.getContext("2d",{alpha:true});
+const bg=document.getElementById("bg"), fx=document.getElementById("fx");
+const B=bg.getContext("2d",{alpha:false}), F=fx.getContext("2d",{alpha:true});
 const S=document.getElementById("s"), BTN=document.getElementById("btn");
-const clamp=(x,a,b)=>x<a?a:x>b?b:x, lerp=(a,b,t)=>a+(b-a)*t;
 
-let W=0,H=0,DPR=1,seed=1,last=performance.now(),t=0;
-let autoTimer=null;
+const mobile=matchMedia("(pointer:coarse)").matches||innerWidth<760;
+const clamp=(x,a,b)=>x<a?a:x>b?b:x;
+const lerp=(a,b,t)=>a+(b-a)*t;
 
-// ===== 1) “温暖治愈”安全调色板（不会出紫/暗粉/大黑块）=====
-// 每组： [top, mid, low, glow] 颜色都偏自然日光/奶油/蜜桃/蜂蜜/暖白
-const PALETTES=[
-  ["#FFF2E2","#FFD4A3","#E9A56B","#FFF6EE"], // 蜂蜜奶油
-  ["#FFF5EA","#FFD9B8","#E7A07A","#FFF9F2"], // 日落奶茶但更干净
-  ["#FFF3E6","#FFE0B8","#DFA47A","#FFF8F0"], // 暖白+蜜桃
-  ["#FFF7ED","#FFD7A1","#E0A36C","#FFF9F3"], // 暖黄治愈
-  ["#FFF4E9","#FFD6B0","#E6A07C","#FFF8F2"], // 柔软桃金
-  ["#FFF6EE","#FFDFB9","#E3A16F","#FFF9F4"], // 奶油杏子
-];
-let palIndex=0;
+// ---------- Size / DPR ----------
+let W=0,H=0,DPR=1;
+function resize(){
+  DPR=clamp(devicePixelRatio||1,1,2); // iOS稳且足够细腻
+  W=innerWidth; H=innerHeight;
+  bg.width=Math.floor(W*DPR); bg.height=Math.floor(H*DPR);
+  fx.width=Math.floor(W*DPR); fx.height=Math.floor(H*DPR);
+  bg.style.width=fx.style.width=W+"px";
+  bg.style.height=fx.style.height=H+"px";
+  B.setTransform(DPR,0,0,DPR,0,0);
+  F.setTransform(DPR,0,0,DPR,0,0);
+}
+addEventListener("resize",resize,{passive:true});
+resize();
 
-// ===== 2) 颜色工具 =====
+// ---------- Tiny noise helpers (fast value noise + fbm) ----------
+function makeRng(seed){
+  let s=seed>>>0;
+  return ()=>((s=(s*1664525+1013904223)>>>0) & 0xfffffff)/0xfffffff;
+}
+function hash2(ix,iy,seed){
+  let x = (ix*374761393 + iy*668265263) ^ (seed*1442695041);
+  x = (x ^ (x>>>13)) * 1274126177;
+  return ((x ^ (x>>>16))>>>0) / 4294967295;
+}
+function noise2(x,y,seed){
+  const ix=Math.floor(x), iy=Math.floor(y);
+  const fx=x-ix, fy=y-iy;
+  const a=hash2(ix,iy,seed), b=hash2(ix+1,iy,seed), c=hash2(ix,iy+1,seed), d=hash2(ix+1,iy+1,seed);
+  const ux=fx*fx*(3-2*fx), uy=fy*fy*(3-2*fy);
+  return (a*(1-ux)+b*ux)*(1-uy) + (c*(1-ux)+d*ux)*uy;
+}
+function fbm2(x,y,seed){
+  let f=0, amp=0.5, freq=1;
+  for(let i=0;i<5;i++){
+    f += amp*noise2(x*freq,y*freq,seed+i*101);
+    freq*=2; amp*=0.5;
+  }
+  return f;
+}
+
+// ---------- Color helpers ----------
 function hex2rgb(h){
   h=h.replace("#",""); const n=parseInt(h,16);
   return [(n>>16)&255,(n>>8)&255,n&255];
@@ -63,130 +91,408 @@ function mixHex(a,b,t){
   const A=hex2rgb(a),B=hex2rgb(b);
   return rgb2hex(lerp(A[0],B[0],t),lerp(A[1],B[1],t),lerp(A[2],B[2],t));
 }
+function rgb2hsv(r,g,b){
+  r/=255;g/=255;b/=255;
+  const mx=Math.max(r,g,b), mn=Math.min(r,g,b), d=mx-mn;
+  let h=0;
+  if(d!==0){
+    if(mx===r) h=((g-b)/d)%6;
+    else if(mx===g) h=(b-r)/d+2;
+    else h=(r-g)/d+4;
+    h/=6; if(h<0) h+=1;
+  }
+  const s=mx===0?0:d/mx, v=mx;
+  return [h,s,v];
+}
 
-// ===== 3) 颗粒（不是噪点脏，是“极细腻抖动”去数码糊）=====
+// ---------- “Warm healing” base palettes (safe, no purple/magenta) ----------
+const BASE_PALS=[
+  ["#FFF6EE","#FFDDB8","#E6A77A","#FFF9F4"], // 杏奶油
+  ["#FFF3E6","#FFD5A8","#E2A06D","#FFF8F1"], // 蜂蜜暖白
+  ["#FFF7EF","#FFE2BE","#DFA373","#FFF9F3"], // 柔黄暖
+  ["#FFF4EA","#FFD8B1","#E7A47D","#FFF8F2"], // 桃金
+  ["#FFF6F0","#FFE0BA","#E3A16F","#FFF9F4"], // 奶油杏子
+];
+
+// ---------- Offscreen preview for scoring ----------
+const PRE=72;
+const pre=document.createElement("canvas"); pre.width=pre.height=PRE;
+const P=pre.getContext("2d",{alpha:false});
+
+// ---------- Candidate model ----------
+function genCandidate(seed){
+  const rnd=makeRng(seed);
+  const base=BASE_PALS[(rnd()*BASE_PALS.length)|0];
+  // 多层云团（随机中心/大小/强度），避免固定分界线
+  const layers=4 + ((rnd()*3)|0);
+  const blobs=[];
+  for(let i=0;i<layers;i++){
+    blobs.push({
+      x:rnd(), y:rnd()*0.9,
+      r:0.35+0.75*rnd(),
+      a:0.10+0.16*rnd()
+    });
+  }
+  // 动态：云呼吸（极慢）+水波光影（轻微、低对比）
+  const cloudAmt=0.10+0.14*rnd();      // 云层强度
+  const cloudScale=0.8+1.4*rnd();      // 云尺度
+  const cloudSpeed=0.010+0.020*rnd();  // 云变化速度（很慢）
+  const rippleAmt=0.03+0.06*rnd();     // 水波光影强度（轻）
+  const rippleScale=0.9+1.6*rnd();
+  const rippleSpeed=0.15+0.25*rnd();
+  const warmth=0.06+0.10*rnd();        // 额外暖光提亮幅度（防“脏灰”）
+  const vign=0.08+0.10*rnd();          // 暗角幅度（很轻）
+  const grain=0.035+0.025*rnd();       // 颗粒强度（很轻）
+  // 色温呼吸（非常小）
+  const breathe=0.05+0.06*rnd();
+
+  // 特征向量（用于去同质化）
+  const feat=[
+    cloudAmt, cloudScale, rippleAmt, rippleScale, warmth,
+    blobs.length/7, blobs[0].x, blobs[0].y
+  ];
+
+  return {seed, base, blobs, cloudAmt, cloudScale, cloudSpeed, rippleAmt, rippleScale, rippleSpeed, warmth, vign, grain, breathe, feat, score:0, breakdown:null};
+}
+
+// ---------- Render core (draw one frame) ----------
+function renderFrame(ctx,w,h,cand,time){
+  const [top,mid,low,glow]=cand.base;
+  const b=0.5+0.5*Math.sin(time*0.16);
+  const wd=0.5+0.5*Math.sin(time*0.07+1.7);
+
+  // 轻微呼吸：提亮暖白，避免“脏灰”
+  const top2=mixHex(top, glow, cand.warmth*(0.55+0.45*b));
+  const mid2=mixHex(mid, glow, cand.warmth*(0.35+0.65*wd));
+  const low2=mixHex(low, glow, cand.warmth*(0.25+0.55*b));
+
+  ctx.clearRect(0,0,w,h);
+
+  // 基础：柔和线性渐变（但不做“硬分界线”——后面云团会打散）
+  const sky=ctx.createLinearGradient(0,0,0,h);
+  sky.addColorStop(0, top2);
+  sky.addColorStop(0.65, mid2);
+  sky.addColorStop(1, low2);
+  ctx.fillStyle=sky; ctx.fillRect(0,0,w,h);
+
+  // 云团层：多层 radial + soft-light，天然“无分界”
+  ctx.globalCompositeOperation="soft-light";
+  for(const b0 of cand.blobs){
+    const cx=b0.x*w, cy=b0.y*h;
+    const rr=b0.r*Math.max(w,h);
+    const g=ctx.createRadialGradient(cx,cy,0,cx,cy,rr);
+    const a=b0.a*(0.75+0.25*Math.sin(time*0.12 + b0.x*7));
+    g.addColorStop(0, `rgba(255,255,255,${a})`);
+    g.addColorStop(0.55,`rgba(255,246,235,${a*0.55})`);
+    g.addColorStop(1, `rgba(255,255,255,0)`);
+    ctx.fillStyle=g; ctx.fillRect(0,0,w,h);
+  }
+
+  // “云朵呼吸纹理”：低频 fbm 作为非常轻的亮度起伏（不流动叙事，只是空气感）
+  // 为了性能，这里只做少量采样：用大尺寸渐变块叠加 + 噪声调 alpha
+  const steps=10;
+  for(let j=0;j<steps;j++){
+    const y=j/(steps-1);
+    const n=fbm2(0.35 + y*cand.cloudScale, time*cand.cloudSpeed*2.2, cand.seed);
+    const a=cand.cloudAmt*(0.25+0.75*n);
+    const band=ctx.createLinearGradient(0,y*h,0,(y+1/steps)*h);
+    band.addColorStop(0,`rgba(255,255,255,${a})`);
+    band.addColorStop(1,`rgba(255,255,255,0)`);
+    ctx.fillStyle=band;
+    ctx.fillRect(0,(y*h)|0,w,(h/steps+2)|0);
+  }
+
+  // 水波光影（极轻）：用 sin + 噪声扰动做“柔光闪动”，不出现条纹边界
+  ctx.globalCompositeOperation="overlay";
+  ctx.globalAlpha=0.22;
+  for(let j=0;j<8;j++){
+    const yy=(j/7);
+    const phase=time*cand.rippleSpeed + yy*2.6;
+    const n=fbm2(yy*cand.rippleScale, time*0.06, cand.seed+99);
+    const a= cand.rippleAmt*(0.30+0.70*n);
+    const xoff=Math.sin(phase)*0.06*w;
+    const grad=ctx.createLinearGradient(xoff,yy*h,xoff+w*0.92,(yy+0.2)*h);
+    grad.addColorStop(0,`rgba(255,255,255,${a*0.0})`);
+    grad.addColorStop(0.4,`rgba(255,255,255,${a*0.9})`);
+    grad.addColorStop(1,`rgba(255,255,255,${a*0.0})`);
+    ctx.fillStyle=grad;
+    ctx.fillRect(0,(yy*h)|0,w,(h/8+2)|0);
+  }
+  ctx.globalAlpha=1;
+
+  // 暗角（很轻）
+  ctx.globalCompositeOperation="multiply";
+  const v=ctx.createRadialGradient(w*0.5,h*0.55,Math.min(w,h)*0.25,w*0.5,h*0.55,Math.max(w,h)*0.95);
+  const vv=cand.vign*(0.85+0.15*b);
+  v.addColorStop(0,"rgba(0,0,0,0)");
+  v.addColorStop(1,`rgba(0,0,0,${vv})`);
+  ctx.fillStyle=v; ctx.fillRect(0,0,w,h);
+
+  ctx.globalCompositeOperation="source-over";
+}
+
+// ---------- Grain layer (subtle, luma-only) ----------
 let noiseC=document.createElement("canvas"), noiseCtx=noiseC.getContext("2d",{alpha:true});
-let noiseImg=null, noiseSize=256;
-
-function rebuildNoise(){
-  noiseC.width=noiseC.height=noiseSize;
-  const img=noiseCtx.createImageData(noiseSize,noiseSize);
-  const d=img.data;
-  // 稍微偏“蓝噪”一点点：简单做法是用抖动阈值 + 分布收敛，避免团块
-  let s=seed*1e6;
-  function rnd(){ s=(s*1664525+1013904223)>>>0; return (s&0xffff)/0xffff; }
+let noisePat=null, noiseSeed=1;
+function rebuildNoise(seed){
+  noiseSeed=seed>>>0;
+  const N=256; noiseC.width=noiseC.height=N;
+  const img=noiseCtx.createImageData(N,N), d=img.data;
+  let s=noiseSeed;
+  const rnd=()=>((s=(s*1664525+1013904223)>>>0)&0xfffffff)/0xfffffff;
   for(let i=0;i<d.length;i+=4){
     const r=rnd();
-    const v=(r<0.5? r*r : 1-(1-r)*(1-r)); // 让极端值更少（更细腻）
-    const n=(v-0.5)*2; // -1..1
-    // 只做亮度抖动，不引入彩噪，避免“脏紫/脏粉”
-    const a=clamp(10 + (Math.abs(n)*22), 8, 36); // alpha 很低
+    const v=(r<0.5? r*r : 1-(1-r)*(1-r));
+    const a=clamp(10 + Math.abs(v-0.5)*28, 8, 36);
     d[i]=255; d[i+1]=255; d[i+2]=255; d[i+3]=a;
   }
   noiseCtx.putImageData(img,0,0);
-  noiseImg=noiseC;
+  noisePat=null;
+}
+function drawGrain(time,cand){
+  if(!noisePat) noisePat=F.createPattern(noiseC,"repeat");
+  F.clearRect(0,0,W,H);
+  const a=cand.grain*(0.85+0.15*Math.sin(time*2.0));
+  F.globalAlpha=a;
+  const ox=(Math.sin(time*0.9)*3)|0, oy=(Math.cos(time*1.1)*3)|0;
+  F.save(); F.translate(ox,oy);
+  F.fillStyle=noisePat;
+  F.fillRect(-10,-10,W+20,H+20);
+  F.restore();
+  F.globalAlpha=1;
 }
 
-// ===== 4) 自适应尺寸（iOS 友好：限制 DPR，避免发热/掉帧）=====
-function resize(){
-  DPR=clamp(devicePixelRatio||1,1,2); // 2 足够“精致”，再高收益小但耗电大
-  W=innerWidth; H=innerHeight;
-  bg.width=Math.floor(W*DPR); bg.height=Math.floor(H*DPR);
-  bg.style.width=W+"px"; bg.style.height=H+"px";
-  g.width=Math.floor(W*DPR); g.height=Math.floor(H*DPR);
-  g.style.width=W+"px"; g.style.height=H+"px";
-  B.setTransform(DPR,0,0,DPR,0,0);
-  G.setTransform(DPR,0,0,DPR,0,0);
-}
-addEventListener("resize",resize,{passive:true});
+// ---------- Scoring (multi-factor + anti-homogenization) ----------
+function analyzeImageData(img){
+  const d=img.data; const n=img.width*img.height;
+  let warm=0, purple=0, dark=0, hot=0, satSum=0, lumSum=0, lum2=0, muddy=0;
+  let grad1=0, grad2=0, hi=0;
 
-// ===== 5) 核心：时间呼吸（不做空间流动）=====
+  function lum(r,g,b){ return 0.2126*r+0.7152*g+0.0722*b; }
+
+  for(let y=0;y<img.height;y++){
+    for(let x=0;x<img.width;x++){
+      const i=(y*img.width+x)*4;
+      const r=d[i], g=d[i+1], b=d[i+2];
+      const L=lum(r/255,g/255,b/255);
+      lumSum+=L; lum2+=L*L;
+
+      const [h,s,v]=rgb2hsv(r,g,b);
+      satSum+=s;
+
+      // warm target: 0..70°
+      if((h>=0 && h<=70/360) || (h>=0.98 && h<=1)) warm++;
+      // purple/magenta: 255..330°
+      if(h>=255/360 && h<=330/360) purple++;
+      if(L<0.10) dark++;
+      if(L>0.92 && s>0.55) hot++;
+
+      // muddy warm gray: medium lum + medium sat + channels close
+      if(s>0.12 && s<0.45 && L>0.30 && L<0.78){
+        const rg=Math.abs(r-g)/255, rb=Math.abs(r-b)/255, gb=Math.abs(g-b)/255;
+        if(rg<0.06 && rb<0.06 && gb<0.06) muddy++;
+      }
+
+      // gradients (two scales) -> avoid “糊成一坨”也避免“噪点脏”
+      if(x>0){
+        const j=i-4;
+        const L2=lum(d[j]/255,d[j+1]/255,d[j+2]/255);
+        const dl=Math.abs(L-L2);
+        grad1+=dl; if(dl>0.22) hi++;
+      }
+      if(y>0){
+        const j=i-img.width*4;
+        const L2=lum(d[j]/255,d[j+1]/255,d[j+2]/255);
+        const dl=Math.abs(L-L2);
+        grad1+=dl; if(dl>0.22) hi++;
+      }
+      if(x>2){
+        const j=i-8;
+        const L2=lum(d[j]/255,d[j+1]/255,d[j+2]/255);
+        grad2+=Math.abs(L-L2);
+      }
+      if(y>2){
+        const j=i-img.width*8;
+        const L2=lum(d[j]/255,d[j+1]/255,d[j+2]/255);
+        grad2+=Math.abs(L-L2);
+      }
+    }
+  }
+
+  const warmP=warm/n, purpleP=purple/n, darkP=dark/n, hotP=hot/n, muddyP=muddy/n;
+  const lumMean=lumSum/n, lumStd=Math.sqrt(Math.max(0, lum2/n - lumMean*lumMean));
+  const satMean=satSum/n;
+  const gradMean=grad1/(n*2), midMean=grad2/(n*2), hiP=hi/(n*2);
+
+  return {warmP,purpleP,darkP,hotP,muddyP,lumMean,lumStd,satMean,gradMean,midMean,hiP};
+}
+
+// history for anti-homogenization
+const HISTORY=[];
+const HIST_MAX=10;
+
+function similarity(a,b){
+  // cosine-like on small feature vector
+  let dot=0,na=0,nb=0;
+  for(let i=0;i<a.length;i++){
+    dot+=a[i]*b[i]; na+=a[i]*a[i]; nb+=b[i]*b[i];
+  }
+  return dot/Math.sqrt((na*nb)+1e-9);
+}
+
+function scoreCandidate(cand){
+  // multi-time sampling: 防“某一刻好看，动起来变脏”
+  const times=[0.7, 2.1, 3.6];
+  let best=0, sum=0;
+  let breakdown=null;
+
+  for(const tt of times){
+    P.setTransform(1,0,0,1,0,0);
+    renderFrame(P,PRE,PRE,cand,tt);
+    const img=P.getImageData(0,0,PRE,PRE);
+    const a=analyzeImageData(img);
+
+    // 分项打分（0..100），然后加权
+    const sWarm = 100*clamp((a.warmP-0.62)/0.26,0,1);
+    const sLum  = 100*Math.exp(-Math.pow((a.lumMean-0.58)/0.14,2));
+    const sCon  = 100*Math.exp(-Math.pow((a.lumStd-0.18)/0.09,2));
+    const sSat  = 100*Math.exp(-Math.pow((a.satMean-0.46)/0.16,2));
+    const sMid  = 100*clamp((a.midMean-0.030)/0.055,0,1);    // 要有中频结构，但别糊
+    const pMud  = 100*clamp((a.muddyP-0.05)/0.14,0,1);
+    const pPur  = 100*clamp((a.purpleP-0.006)/0.03,0,1);
+    const pDark = 100*clamp((a.darkP-0.06)/0.18,0,1);
+    const pHot  = 100*clamp((a.hotP-0.03)/0.10,0,1);
+    const pHi   = 100*clamp((a.hiP-0.012)/0.05,0,1);
+
+    // 总分：温暖舒适优先，其次结构细腻；强力惩罚“脏/紫/黑块/刺”
+    let score =
+      0.20*sWarm + 0.18*sLum + 0.10*sCon + 0.10*sSat + 0.12*sMid
+      - 0.18*pMud - 0.18*pPur - 0.08*pDark - 0.06*pHot - 0.06*pHi;
+
+    score=clamp(score,0,100);
+    sum += score; if(score>best) best=score;
+
+    // 取中间时刻做展示 breakdown（便于你观察）
+    if(tt===2.1){
+      breakdown={sWarm,sLum,sCon,sSat,sMid,pMud,pPur,pDark,pHot,pHi, raw:a};
+    }
+  }
+
+  let score = (sum/times.length)*0.65 + best*0.35; // 稳定+峰值
+
+  // anti-homogenization: 与最近背景过像就扣分
+  if(HISTORY.length){
+    let simMax=0;
+    for(const f of HISTORY) simMax=Math.max(simMax, similarity(cand.feat,f));
+    // 过像就扣，保留多样性（但不会乱跑色域，因为生成本身是暖治愈约束）
+    score -= 18*clamp((simMax-0.92)/0.08,0,1);
+  }
+
+  cand.score=clamp(score,0,100);
+  cand.breakdown=breakdown;
+  return cand.score;
+}
+
+// ---------- Candidate selection (multi-round filtering) ----------
+let current=null, next=null, seedBase=123456789;
+
+function findHighScore(maxTry=24, threshold=82){
+  let best=null, bestS=-1;
+  for(let i=0;i<maxTry;i++){
+    seedBase=(seedBase*1664525+1013904223)>>>0;
+    const c=genCandidate(seedBase);
+    const s=scoreCandidate(c);
+    if(s>bestS){bestS=s; best=c;}
+    if(s>=threshold) return c;
+  }
+  return best;
+}
+
+function scheduleNext(){
+  // 分片搜索，避免手机卡顿
+  let tries=0, best=null, bestS=-1;
+  const step=()=>{
+    const batch=2;
+    for(let k=0;k<batch;k++){
+      tries++;
+      seedBase=(seedBase*1664525+1013904223)>>>0;
+      const c=genCandidate(seedBase);
+      const s=scoreCandidate(c);
+      if(s>bestS){bestS=s; best=c;}
+      if(s>=84 || tries>=28){
+        next=best; return;
+      }
+    }
+    setTimeout(step,0);
+  };
+  next=null; step();
+}
+
+function apply(c){
+  current=c;
+  rebuildNoise(c.seed ^ 0x9e3779b9);
+  // push history (feature)
+  HISTORY.unshift(c.feat.slice());
+  if(HISTORY.length>HIST_MAX) HISTORY.pop();
+}
+
+// ---------- UI + auto switch ----------
+let auto=null;
+function switchNow(){
+  if(next){ apply(next); next=null; scheduleNext(); }
+  else { apply(findHighScore(18,82)); scheduleNext(); }
+  clearInterval(auto); auto=setInterval(()=>switchNow(),60*1000);
+}
+BTN.addEventListener("click",switchNow);
+auto=setInterval(()=>switchNow(),60*1000);
+
+// ---------- Main loop ----------
+let last=performance.now(), t=0, ema=60, scale=1; // scale用于性能自适应
 function draw(now){
   requestAnimationFrame(draw);
   const dt=now-last; last=now;
+  const fps=1000/(dt||16.7); ema=ema*0.92+fps*0.08;
   t += dt*0.001;
 
-  // 非常慢的“呼吸”和“色温漂移”，幅度很小
-  const breathe = 0.5 + 0.5*Math.sin(t*0.18);
-  const warmDrift= 0.5 + 0.5*Math.sin(t*0.07 + 1.7);
+  // 轻自适应：优先清晰，但掉帧就稍微降一点像素（只影响 canvas 实际分辨率）
+  const target = mobile ? 60 : 90;
+  if(ema<target*0.92) scale=clamp(scale*0.985,0.82,1);
+  if(ema>target*1.03) scale=clamp(scale*1.003,0.82,1);
 
-  const [top,mid,low,glow]=PALETTES[palIndex];
+  // 只在需要时重设尺寸（避免抖动）
+  const wantW=Math.floor(W*DPR*scale), wantH=Math.floor(H*DPR*scale);
+  if(Math.abs(bg.width-wantW)>3 || Math.abs(bg.height-wantH)>3){
+    bg.width=wantW; bg.height=wantH; fx.width=wantW; fx.height=wantH;
+    B.setTransform((wantW/W),0,0,(wantH/H),0,0);
+    F.setTransform((wantW/W),0,0,(wantH/H),0,0);
+  }
 
-  // 轻微的色温/明度混合：用暖白 glow 稍微提亮，避免“脏灰”
-  const top2 = mixHex(top, glow, 0.10 + 0.08*breathe);
-  const mid2 = mixHex(mid, glow, 0.06 + 0.06*warmDrift);
-  const low2 = mixHex(low, glow, 0.04 + 0.05*breathe);
+  if(!current) return;
 
-  // 背景渐变：稳定的大形态（不动）
-  B.clearRect(0,0,W,H);
-  const sky=B.createLinearGradient(0,0,0,H);
-  sky.addColorStop(0, top2);
-  sky.addColorStop(0.55, mid2);
-  sky.addColorStop(1, low2);
-  B.fillStyle=sky;
-  B.fillRect(0,0,W,H);
+  // render background at current canvas internal size but in CSS coords
+  const rw=bg.width/(W), rh=bg.height/(H);
+  B.save(); B.setTransform(rw,0,0,rh,0,0);
+  renderFrame(B,W,H,current,t);
+  B.restore();
 
-  // 柔光“光域”（很轻）：模拟真实环境里的散射光，不产生结构叙事
-  const cx=W*0.35, cy=H*0.25;
-  const r=Math.max(W,H)*0.85;
-  const halo=B.createRadialGradient(cx,cy,0,cx,cy,r);
-  halo.addColorStop(0, "rgba(255,255,255,"+(0.10+0.06*breathe)+")");
-  halo.addColorStop(0.6,"rgba(255,245,235,"+(0.06+0.04*warmDrift)+")");
-  halo.addColorStop(1, "rgba(255,255,255,0)");
-  B.globalCompositeOperation="soft-light";
-  B.fillStyle=halo;
-  B.fillRect(0,0,W,H);
+  // grain
+  F.save(); F.setTransform(rw,0,0,rh,0,0);
+  drawGrain(t,current);
+  F.restore();
 
-  // 暗角（极轻）：让画面更“自然聚光”，但不压黑
-  const v=B.createRadialGradient(W*0.5,H*0.55,Math.min(W,H)*0.25,W*0.5,H*0.55,Math.max(W,H)*0.9);
-  v.addColorStop(0,"rgba(0,0,0,0)");
-  v.addColorStop(1,"rgba(0,0,0,"+(0.12-0.03*breathe)+")");
-  B.globalCompositeOperation="multiply";
-  B.fillStyle=v;
-  B.fillRect(0,0,W,H);
-
-  B.globalCompositeOperation="source-over";
-
-  // 颗粒层：不动的噪声纹理 + 轻微时间闪烁（“时间噪声”），不会造成空间流动
-  if(!noiseImg) rebuildNoise();
-  G.clearRect(0,0,W,H);
-  const alpha = 0.055 + 0.015*Math.sin(t*1.9); // 很轻
-  G.globalAlpha=alpha;
-  // 平铺
-  const pat=G.createPattern(noiseImg,"repeat");
-  G.fillStyle=pat;
-  // 微小偏移（避免屏幕固定图案感，但不形成“流动”）
-  const ox=(Math.sin(t*0.9)*3)|0, oy=(Math.cos(t*1.1)*3)|0;
-  G.save();
-  G.translate(ox,oy);
-  G.fillRect(-10,-10,W+20,H+20);
-  G.restore();
-  G.globalAlpha=1;
-
-  // 状态（不频繁刷新）
+  // status
   if(((now/500)|0)%2===0){
-    S.textContent=`ambient · palette ${palIndex+1}/${PALETTES.length} · dpr ${DPR.toFixed(1)}`;
+    const sc=current.score?.toFixed(0) ?? "--";
+    const nx=next?.score!=null ? next.score.toFixed(0) : "…";
+    const b=current.breakdown;
+    // 只显示关键项，避免UI太吵
+    S.textContent=`score ${sc} · next ${nx} · fps~${ema.toFixed(0)} · cloud ${current.cloudAmt.toFixed(2)} · ripple ${current.rippleAmt.toFixed(2)}`;
   }
 }
-
-// ===== 6) 切换：只换“同样温暖治愈”的配色组 =====
-function switchPalette(manual=true){
-  palIndex=(palIndex+1)%PALETTES.length;
-  // 换一张更“新鲜”的颗粒（种子变），但仍然很细腻
-  seed = (seed*1664525 + 1013904223)>>>0;
-  noiseImg=null;
-  if(manual){
-    if(autoTimer) clearInterval(autoTimer);
-    autoTimer=setInterval(()=>switchPalette(false),60*1000);
-  }
-}
-BTN.addEventListener("click",()=>switchPalette(true));
-
-// 每分钟自动切换（你如果想固定一张，把这两行删掉即可）
-autoTimer=setInterval(()=>switchPalette(false),60*1000);
 
 // init
-resize();
+apply(findHighScore(22,82));
+scheduleNext();
 requestAnimationFrame(draw);
 })();
 </script>
