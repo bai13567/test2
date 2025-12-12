@@ -2,9 +2,9 @@
 <html lang="zh">
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
-<title>White Clouds (iOS Safari)</title>
+<title>White Clouds (High Contrast)</title>
 <style>
-  html,body{margin:0;height:100%;overflow:hidden;background:#eef6ff}
+  html,body{margin:0;height:100%;overflow:hidden;background:#eaf3ff}
   canvas{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none}
 </style>
 <canvas id="c"></canvas>
@@ -21,6 +21,8 @@
   }
 
   const V=`attribute vec2 p;void main(){gl_Position=vec4(p,0.,1.);}`;
+
+  // 重点：更强的厚度、阴影、银边、局部对比
   const F=`precision highp float;
 uniform vec2 r; uniform float t;
 
@@ -49,76 +51,94 @@ void main(){
   vec2 p = uv*2.0 - 1.0;
   p.x *= r.x / r.y;
 
+  // 时间：慢速大气流动
   float tt = t*0.03;
-  vec2 baseDrift = vec2(tt*1.05, tt*0.62);
+  vec2 drift = vec2(tt*1.05, tt*0.62);
 
   // 下厚上薄
   float h = clamp((p.y+1.0)*0.5, 0.0, 1.0);
-  float layer = mix(1.18, 0.80, h);
+  float layer = mix(1.22, 0.80, h);
+  vec2 q = p*0.98*layer;
 
-  vec2 q = p*0.95*layer;
+  // 卷动扭曲，避免贴图平移感
+  q += 0.22*flow(q*1.2 + drift*0.8) + 0.09*flow(q*2.0 - drift*1.1);
 
-  // 卷动流场（避免贴图平移感）
-  vec2 f1 = flow(q*1.2 + baseDrift*0.8);
-  vec2 f2 = flow(q*2.0 - baseDrift*1.1);
-  q += 0.20*f1 + 0.08*f2;
+  // 三频：形体/细节/纤维
+  float shape  = fbm(q*0.72 + drift*0.55);
+  float detail = fbm(q*1.75 - drift*0.95);
+  float wisps  = fbm(q*3.60 + drift*1.35);
 
-  // 三段频率：形体/细节/边缘纤维
-  float shape  = fbm(q*0.75 + baseDrift*0.6);
-  float detail = fbm(q*1.8  - baseDrift*1.0);
-  float wisps  = fbm(q*3.6  + baseDrift*1.4);
-
-  // ⭐ 云量：把 cover 调低一点，云更容易“出现”
-  float cover = mix(0.49, 0.58, 1.0-h); // 原来更高，会太稀
+  // ⭐ 云量更大（cover 更低 = 更容易有云）
+  float cover = mix(0.46, 0.56, 1.0-h);
   float base = shape - cover;
 
-  // 云 mask + 边缘带
-  float m    = smoothstep(-0.10, 0.20, base);
-  float edge = smoothstep(0.20, -0.06, abs(base));
+  // mask 与边缘带
+  float m    = smoothstep(-0.12, 0.22, base);
+  float edge = smoothstep(0.22, -0.07, abs(base)); // 边缘附近≈1
 
-  // ⭐ 密度：整体增强一点，边缘纤维只加在边界
-  float dens = m * (0.62 + 0.38*detail);
-  dens += edge * 0.26 * (wisps-0.5);
+  // ⭐ 密度更厚：内部 + 边缘纤维
+  float dens = m * (0.58 + 0.42*detail);
+  dens += edge * 0.30 * (wisps-0.5);
   dens = clamp(dens, 0.0, 1.0);
-  dens = clamp(dens*1.20, 0.0, 1.0);   // ⭐ 关键：云更“厚”
+  dens = clamp(dens*1.35, 0.0, 1.0); // ⭐ 关键：厚度上去
 
-  // 光照：上方光源
-  vec2 L = normalize(vec2(-0.45, 0.90));
+  // 光照：来自左上
+  vec2 L2 = normalize(vec2(-0.45, 0.90));
+
+  // 用密度场近似法线（梯度）
   float e=0.0035;
-  float dx = (fbm((q+vec2(e,0))*0.9 + baseDrift*0.6) - fbm((q-vec2(e,0))*0.9 + baseDrift*0.6));
-  float dy = (fbm((q+vec2(0,e))*0.9 + baseDrift*0.6) - fbm((q-vec2(0,e))*0.9 + baseDrift*0.6));
-  vec3 N = normalize(vec3(-dx*2.2, -dy*2.2, 1.0));
-  float ndl = clamp(dot(N, vec3(L, 0.6)), 0.0, 1.0);
+  float s1=fbm((q+vec2(e,0))*0.9 + drift*0.55);
+  float s2=fbm((q-vec2(e,0))*0.9 + drift*0.55);
+  float s3=fbm((q+vec2(0,e))*0.9 + drift*0.55);
+  float s4=fbm((q-vec2(0,e))*0.9 + drift*0.55);
+  float dx = s1 - s2;
+  float dy = s3 - s4;
+  vec3 N = normalize(vec3(-dx*2.5, -dy*2.5, 1.0));
 
-  // Beer-Lambert：厚处更暗更实体
+  // 漫反射 + 轻微顶光偏置（更立体）
+  float ndl = clamp(dot(N, vec3(L2, 0.65)), 0.0, 1.0);
+  float topLight = pow(clamp(N.y*0.5+0.5, 0.0, 1.0), 1.2);
+  float light = clamp(0.18 + 0.70*ndl + 0.12*topLight, 0.0, 1.0);
+
+  // ⭐ 厚度阴影：越厚越暗（内部体积感）
   float thick = dens*dens;
-  float trans = exp(-2.45*thick);
+  float shadow = exp(-3.0*thick);           // 厚处强压暗
+  float inner = mix(0.55, 1.0, shadow);     // 0.55~1.0
 
-  // 银边：边缘更亮一点点
-  float rim = pow(1.0 - clamp(dot(N, vec3(0,0,1)), 0.0, 1.0), 2.0);
-  float silver = rim * edge * (0.40 + 0.60*ndl);
+  // ⭐ 银边：边缘更亮（薄云逆光）
+  float rim = pow(1.0 - clamp(dot(N, vec3(0,0,1)), 0.0, 1.0), 2.2);
+  float silver = rim * edge * (0.35 + 0.65*ndl);
 
-  // ⭐ 天空略压一点（iOS 很容易把浅色吃掉云对比）
-  vec3 skyTop = vec3(0.80, 0.90, 1.00);
-  vec3 skyBot = vec3(0.92, 0.955, 1.00);
+  // 天空：稍压暗，拉开云对比
+  vec3 skyTop = vec3(0.77, 0.88, 1.00);
+  vec3 skyBot = vec3(0.90, 0.945, 1.00);
   vec3 sky = mix(skyBot, skyTop, smoothstep(-1.0, 1.0, p.y));
-  sky = mix(sky, vec3(0.975,0.985,1.0), 0.06*(1.0-h));
+  sky *= 0.985; // 很轻的整体压暗
 
-  // 云颜色：亮部暖、阴影冷（对比稍加）
-  vec3 warm = vec3(1.00, 0.99, 0.975);
-  vec3 cool = vec3(0.78, 0.86, 0.98);
-  vec3 cloudLit = mix(cool, warm, 0.30 + 0.70*ndl);
+  // 云颜色：亮部暖白，阴影冷蓝灰（但别脏）
+  vec3 warm = vec3(1.00, 0.995, 0.985);
+  vec3 cool = vec3(0.70, 0.80, 0.96);
+  vec3 cloudBase = mix(cool, warm, light);
+  cloudBase *= inner; // 体积阴影
 
-  // ⭐ alpha 提升：让云更明显，但不“糊一片白”
-  float alpha = clamp(dens*1.55, 0.0, 1.0);
+  // ⭐ 云遮挡（alpha）更强：更明显、更立体
+  float alpha = clamp(dens*1.75, 0.0, 1.0);
 
-  vec3 col = mix(sky, cloudLit, alpha*(0.78 + 0.22*(1.0-trans)));
-  col = mix(col, vec3(1.0), 0.22*silver);
+  // 透射：薄处透更多天空（边缘更柔）
+  float trans = exp(-2.6*thick);
+  float mixAmt = alpha*(0.80 + 0.20*(1.0-trans));
 
-  // 轻微对比（避免灰）
+  vec3 col = mix(sky, cloudBase, mixAmt);
+
+  // 银边提亮（更明显但控制强度）
+  col = mix(col, vec3(1.0), 0.30*silver);
+
+  // ⭐ 局部对比增强（不会灰）：S-curve
   col = clamp(col, 0.0, 1.0);
-  col = pow(col, vec3(0.97));
-  gl_FragColor = vec4(col, 1.0);
+  col = col*col*(3.0-2.0*col);     // smoothstep 曲线提升对比
+  col = pow(col, vec3(0.95));      // 轻微提亮白云
+
+  gl_FragColor = vec4(clamp(col,0.0,1.0), 1.0);
 }`;
 
   function sh(type,src){
