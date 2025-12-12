@@ -1,27 +1,26 @@
-<!doctype html><meta charset="utf-8"><meta name="viewport"content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Neon Rift X (iOS-safe)</title>
+<!doctype html><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<title>Neon Rift X (iOS Interaction Fixed)</title>
 <style>
-html,body{margin:0;height:100%;background:#05060a;overflow:hidden;font:12px ui-monospace,Menlo,Consolas,monospace}
-#ui{position:fixed;inset:12px 12px auto 12px;z-index:9;display:flex;gap:10px;align-items:center;color:#d7e3ff;mix-blend-mode:screen}
+html,body{margin:0;height:100%;background:#05060a;overflow:hidden;overscroll-behavior:none;
+font:12px ui-monospace,Menlo,Consolas,monospace;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+#ui{position:fixed;inset:12px 12px auto 12px;z-index:9;display:flex;gap:10px;align-items:center;color:#d7e3ff;mix-blend-mode:screen;pointer-events:none}
 #pill{flex:1;min-width:0;padding:10px 12px;border-radius:14px;border:1px solid #7af5;background:linear-gradient(90deg,#1a2bff22,#ff2bd722);
 backdrop-filter:blur(12px);box-shadow:0 0 0 1px #fff1 inset,0 14px 40px #000b;text-shadow:0 0 14px #7af,0 0 30px #f0f}
 #pill b{color:#fff}#pill small{display:block;opacity:.85;margin-top:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-#btn{padding:10px 12px;border-radius:14px;border:1px solid #fff2;background:#0006;color:#fff;backdrop-filter:blur(12px)}
+#btn{pointer-events:auto;padding:10px 12px;border-radius:14px;border:1px solid #fff2;background:#0006;color:#fff;backdrop-filter:blur(12px)}
 #btn:active{transform:translateY(1px)}
 body:before{content:"";position:fixed;inset:-60px;pointer-events:none;background:
 repeating-linear-gradient(0deg,rgba(255,255,255,.045),rgba(255,255,255,.045) 1px,transparent 2px,transparent 5px);
 mix-blend-mode:overlay;opacity:.30;animation:scan 7s linear infinite}
 @keyframes scan{to{transform:translateY(60px)}}
-canvas{display:block}
+canvas{display:block;touch-action:none} /* 关键：iOS 仍需 preventDefault 兜底 */
 </style>
+
 <div id=ui><div id=pill><b>NEON RIFT X</b> · <span id=s>loading…</span>
-<small>单指=涡旋 · 双指=缩放+平移 · BOOM=震荡+特效拉满（自适应性能）</small></div><button id=btn>BOOM</button></div>
+<small>单指=涡旋 · 双指=缩放+平移 · BOOM=震荡（iOS Safari 修复版）</small></div><button id=btn>BOOM</button></div>
 
 <script type="module">
-/* 语言元素（额外 3 种以上）：GLSL + JSON + SVG(滤镜) */
-const GLSL=`void main(){gl_FragColor=vec4(1.);}`; // 占位展示
-const CFG={"dprCap":1.8,"mobileDprCap":1.55,"pDesktop":90000,"pMobile":60000}; // JSON
-const SVG=`<svg><filter id="glow"><feGaussianBlur stdDeviation="2"/></filter></svg>`; // SVG(字符串展示)
-
 import * as THREE from "https://unpkg.com/three@0.161.0/build/three.module.js";
 import { EffectComposer } from "https://unpkg.com/three@0.161.0/examples/jsm/postprocessing/EffectComposer.js";
 import { RenderPass } from "https://unpkg.com/three@0.161.0/examples/jsm/postprocessing/RenderPass.js";
@@ -35,19 +34,20 @@ import { RGBShiftShader } from "https://unpkg.com/three@0.161.0/examples/jsm/sha
 const S=document.getElementById("s"),BTN=document.getElementById("btn");
 const mobile=matchMedia("(pointer:coarse)").matches||innerWidth<760;
 const clamp=(x,a,b)=>x<a?a:x>b?b:x;
+const isIOS=/iPad|iPhone|iPod/.test(navigator.userAgent);
 
-let DPR=clamp(devicePixelRatio||1,1,mobile?CFG.mobileDprCap:CFG.dprCap),W=innerWidth,H=innerHeight;
+let DPR=clamp(devicePixelRatio||1,1,mobile?1.55:1.8),W=innerWidth,H=innerHeight;
 let zoom=1,panx=0,pany=0,boom=0,md=0,t=0,px=0,py=0,quality=1,ema=60;
-let touches=new Map(),pinch0=0,zoom0=1,pan0=[0,0],cent0=[0,0];
 
 const r=new THREE.WebGLRenderer({antialias:false,alpha:false,powerPreference:"high-performance"});
 r.setClearColor(0x05060a,1);r.setPixelRatio(DPR);r.setSize(W,H);
+r.domElement.style.touchAction="none"; // 关键：绑在 canvas
 document.body.appendChild(r.domElement);
 
 const scene=new THREE.Scene();
 const cam=new THREE.PerspectiveCamera(55,W/H,0.01,30);cam.position.set(0,0,2.3);
 
-/* 背景 Shader（稳定写法：普通 plane + ShaderMaterial） */
+/* 背景 shader */
 const bg=new THREE.Mesh(new THREE.PlaneGeometry(2,2),
 new THREE.ShaderMaterial({
   depthWrite:false,depthTest:false,
@@ -76,11 +76,10 @@ void main(){
 }`}));
 bg.frustumCulled=false;scene.add(bg);
 
-/* 粒子：用 Points（iOS 最稳），位置用 BufferAttribute（不搞 instancing 花活） */
-let count=mobile?CFG.pMobile:CFG.pDesktop;
+/* 粒子 */
+let count=mobile?60000:90000;
 let pos=new Float32Array(count*3),vel=new Float32Array(count*2),hue=new Float32Array(count);
-for(let i=0;i<count;i++){pos[i*3]=(Math.random()*2-1);pos[i*3+1]=(Math.random()*2-1);pos[i*3+2]=0;
-vel[i*2]=0;vel[i*2+1]=0;hue[i]=Math.random();}
+for(let i=0;i<count;i++){pos[i*3]=Math.random()*2-1;pos[i*3+1]=Math.random()*2-1;pos[i*3+2]=0;vel[i*2]=vel[i*2+1]=0;hue[i]=Math.random();}
 const geom=new THREE.BufferGeometry();
 geom.setAttribute("position",new THREE.BufferAttribute(pos,3));
 geom.setAttribute("aHue",new THREE.BufferAttribute(hue,1));
@@ -107,57 +106,111 @@ void main(){
   col*=1.0+B*0.35;
   gl_FragColor=vec4(col,a*vA);
 }`});
-const pts=new THREE.Points(geom,mat);scene.add(pts);
+scene.add(new THREE.Points(geom,mat));
 
-/* 后处理（three 官方 examples：iOS Safari 更稳） */
+/* 后处理 */
 const composer=new EffectComposer(r);
 composer.addPass(new RenderPass(scene,cam));
 const bloom=new UnrealBloomPass(new THREE.Vector2(W,H),1.2,0.7,0.05); composer.addPass(bloom);
 const after=new AfterimagePass(0.88); composer.addPass(after);
 const rgb=new ShaderPass(RGBShiftShader); rgb.uniforms["amount"].value=0.0016; composer.addPass(rgb);
 const film=new FilmPass(0.35,0.5,720,false); composer.addPass(film);
-const glitch=new GlitchPass(); glitch.enabled=true; composer.addPass(glitch);
+const glitch=new GlitchPass(); composer.addPass(glitch);
 
-/* WebAudio：iOS 需要用户手势 */
+/* iOS：强制阻断浏览器手势（关键） */
+function hardBlockNativeGestures(el){
+  // iOS Safari 特别吃这一套：必须 passive:false + preventDefault
+  ["touchstart","touchmove","touchend","touchcancel"].forEach(type=>{
+    el.addEventListener(type,e=>{
+      if(e.touches && e.touches.length>=2) e.preventDefault(); // 双指一律阻止页面缩放/滚动
+    },{passive:false});
+  });
+  // iOS 旧“gesture*”事件（有些版本仍会触发）
+  ["gesturestart","gesturechange","gestureend"].forEach(type=>{
+    el.addEventListener(type,e=>e.preventDefault(),{passive:false});
+  });
+}
+hardBlockNativeGestures(r.domElement);
+
+/* 互动：以 TouchEvents 为主（iOS 稳），Pointer 作为非 iOS 补充 */
+let touchMode=0, pinch0=0, zoom0=1, pan0x=0, pan0y=0, cx0=0, cy0=0;
+
+function setM(cx,cy){px=(cx/innerWidth-.5)*1.6;py=(cy/innerHeight-.5)*1.6}
+function dist2(a,b){let dx=a.clientX-b.clientX,dy=a.clientY-b.clientY;return Math.hypot(dx,dy)}
+function center2(a,b){return {x:(a.clientX+b.clientX)/2,y:(a.clientY+b.clientY)/2}}
+
+function onTouchStart(e){
+  if(e.touches.length===1){touchMode=1;md=1;setM(e.touches[0].clientX,e.touches[0].clientY)}
+  else if(e.touches.length===2){
+    touchMode=2;md=0;
+    pinch0=dist2(e.touches[0],e.touches[1]); zoom0=zoom;
+    pan0x=panx; pan0y=pany;
+    const c=center2(e.touches[0],e.touches[1]); cx0=c.x; cy0=c.y;
+  }
+}
+function onTouchMove(e){
+  if(touchMode===1 && e.touches.length===1){
+    setM(e.touches[0].clientX,e.touches[0].clientY);
+  }else if(touchMode===2 && e.touches.length===2){
+    const d=dist2(e.touches[0],e.touches[1])||pinch0;
+    zoom=clamp(zoom0*(d/pinch0),.55,2.7);
+    const c=center2(e.touches[0],e.touches[1]);
+    panx=pan0x+((c.x-cx0)/innerWidth)*1.6;
+    pany=pan0y+((c.y-cy0)/innerHeight)*1.6;
+  }
+}
+function onTouchEnd(e){
+  if(e.touches.length===0){touchMode=0;md=0}
+  else if(e.touches.length===1){touchMode=1;md=1;setM(e.touches[0].clientX,e.touches[0].clientY)}
+}
+
+r.domElement.addEventListener("touchstart",onTouchStart,{passive:false});
+r.domElement.addEventListener("touchmove",onTouchMove,{passive:false});
+r.domElement.addEventListener("touchend",onTouchEnd,{passive:false});
+r.domElement.addEventListener("touchcancel",onTouchEnd,{passive:false});
+
+/* 非 iOS：Pointer 补充（可用但不强依赖） */
+if(!isIOS){
+  let touches=new Map(),pinchP=0,zoomP=1,panP=[0,0],centP=[0,0];
+  const dist=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y),center=(a,b)=>({x:(a.x+b.x)/2,y:(a.y+b.y)/2});
+  r.domElement.addEventListener("pointerdown",e=>{
+    r.domElement.setPointerCapture(e.pointerId);
+    touches.set(e.pointerId,{x:e.clientX,y:e.clientY});
+    md=touches.size===1;
+    if(touches.size===1)setM(e.clientX,e.clientY);
+    if(touches.size===2){
+      let [p1,p2]=[...touches.values()];pinchP=dist(p1,p2);zoomP=zoom;panP=[panx,pany];
+      let ce=center(p1,p2);centP=[ce.x,ce.y];
+    }
+  });
+  r.domElement.addEventListener("pointermove",e=>{
+    if(!touches.has(e.pointerId))return;
+    let p=touches.get(e.pointerId);p.x=e.clientX;p.y=e.clientY;
+    if(touches.size===1){let q=[...touches.values()][0];setM(q.x,q.y)}
+    else if(touches.size===2){
+      let [p1,p2]=[...touches.values()],d=dist(p1,p2);
+      zoom=clamp(zoomP*(d/(pinchP||d)),.55,2.7);
+      let ce=center(p1,p2);
+      panx=panP[0]+((ce.x-centP[0])/innerWidth)*1.6;
+      pany=panP[1]+((ce.y-centP[1])/innerHeight)*1.6;
+    }
+  });
+  r.domElement.addEventListener("pointerup",e=>{touches.delete(e.pointerId);md=touches.size===1;});
+  r.domElement.addEventListener("pointercancel",()=>{touches.clear();md=0;});
+}
+
+addEventListener("wheel",e=>{zoom=clamp(zoom*(e.deltaY>0?1.08:.92),.55,2.7)},{passive:true});
+
+/* BOOM + iOS 音频手势 */
 let AC;const beep=(k=1)=>{try{AC||(AC=new (window.AudioContext||window.webkitAudioContext)());
 const o=AC.createOscillator(),g=AC.createGain();o.type="sawtooth";o.frequency.value=160+Math.random()*240;
 g.gain.setValueAtTime(0.0001,AC.currentTime);g.gain.exponentialRampToValueAtTime(0.10*k,AC.currentTime+.01);
 g.gain.exponentialRampToValueAtTime(0.0001,AC.currentTime+.22);o.connect(g);g.connect(AC.destination);o.start();o.stop(AC.currentTime+.24);}catch(e){}};
-const boomNow=()=>{boom=1;beep(1.25)}; BTN.onclick=boomNow; addEventListener("keydown",e=>e.code==="Space"&&boomNow());
-
-function setM(cx,cy){px=(cx/innerWidth-.5)*1.6;py=(cy/innerHeight-.5)*1.6}
-function dist(a,b){let dx=a.x-b.x,dy=a.y-b.y;return Math.hypot(dx,dy)}
-function center(a,b){return {x:(a.x+b.x)/2,y:(a.y+b.y)/2}}
-
-addEventListener("pointerdown",e=>{
-  r.domElement.setPointerCapture(e.pointerId);
-  touches.set(e.pointerId,{x:e.clientX,y:e.clientY});
-  md=touches.size===1;
-  if(touches.size===1) setM(e.clientX,e.clientY);
-  if(touches.size===2){
-    let [p1,p2]=[...touches.values()];pinch0=dist(p1,p2);zoom0=zoom;pan0=[panx,pany];
-    let ce=center(p1,p2);cent0=[ce.x,ce.y];
-  }
-},{passive:false});
-addEventListener("pointermove",e=>{
-  if(!touches.has(e.pointerId))return;
-  let p=touches.get(e.pointerId);p.x=e.clientX;p.y=e.clientY;
-  if(touches.size===1){let q=[...touches.values()][0];setM(q.x,q.y)}
-  else if(touches.size===2){
-    let [p1,p2]=[...touches.values()],d=dist(p1,p2);
-    zoom=clamp(zoom0*(d/(pinch0||d)),.55,2.7);
-    let ce=center(p1,p2);
-    panx=pan0[0]+((ce.x-cent0[0])/innerWidth)*1.6;
-    pany=pan0[1]+((ce.y-cent0[1])/innerHeight)*1.6;
-  }
-},{passive:false});
-addEventListener("pointerup",e=>{touches.delete(e.pointerId);md=touches.size===1;});
-addEventListener("pointercancel",()=>{touches.clear();md=0;});
-addEventListener("wheel",e=>{zoom=clamp(zoom*(e.deltaY>0?1.08:.92),.55,2.7)},{passive:true});
+const boomNow=()=>{boom=1;beep(1.25)}; BTN.addEventListener("click",boomNow);
 
 function onResize(){
   W=innerWidth;H=innerHeight;
-  DPR=clamp(devicePixelRatio||1,1,mobile?CFG.mobileDprCap:CFG.dprCap);
+  DPR=clamp(devicePixelRatio||1,1,mobile?1.55:1.8);
   r.setPixelRatio(DPR);r.setSize(W,H);composer.setSize(W,H);
   cam.aspect=W/H;cam.updateProjectionMatrix();
   bg.material.uniforms.R.value.set(W*DPR,H*DPR);
@@ -165,16 +218,15 @@ function onResize(){
 }
 addEventListener("resize",onResize);onResize();
 
-/* 自适应性能：调 DPR + 后期强度（接近 0 卡顿的工程做法） */
-let last=performance.now();
+/* 性能自适应 */
+let last=performance.now(),frame=0;
 function adapt(dt){
   const fps=1000/dt; ema=ema*0.92+fps*0.08;
   if(ema<55 && quality>0.65) quality-=0.03;
   if(ema<45 && quality>0.50) quality-=0.06;
   if(ema>58 && quality<1.0) quality+=0.01;
   quality=clamp(quality,0.5,1);
-
-  const target=clamp((mobile?1.45:1.85)*quality,0.9,mobile?CFG.mobileDprCap:CFG.dprCap);
+  const target=clamp((mobile?1.45:1.85)*quality,0.9,mobile?1.55:1.8);
   const cur=r.getPixelRatio();
   if(Math.abs(cur-target)>0.10){r.setPixelRatio(target);composer.setSize(W,H);bg.material.uniforms.R.value.set(W*target,H*target);}
   bloom.strength=1.0*(0.65+0.35*quality)+boom*0.9;
@@ -186,8 +238,7 @@ function adapt(dt){
   film.uniforms["sIntensity"].value=0.35+boom*0.35;
 }
 
-/* 粒子更新：时间分片（减少主线程波动） */
-let frame=0;
+/* 粒子更新：时间分片 */
 function step(now){
   const dt=now-last;last=now;
   t+=dt*0.001*(1+(boom?2.2:0));
@@ -222,7 +273,7 @@ function step(now){
   adapt(dt);
   composer.render();
 
-  if((frame&7)===0) S.textContent=`${mobile?"iOS/mobile":"desktop"} · fps~${ema.toFixed(0)} · q=${quality.toFixed(2)} · dpr=${r.getPixelRatio().toFixed(2)} · boom=${boom?boom.toFixed(2):0}`;
+  if((frame&7)===0) S.textContent=`${isIOS?"iOS Safari":"browser"} · fps~${ema.toFixed(0)} · q=${quality.toFixed(2)} · dpr=${r.getPixelRatio().toFixed(2)} · z=${zoom.toFixed(2)} · pan=(${panx.toFixed(2)},${pany.toFixed(2)})`;
   requestAnimationFrame(step);
 }
 requestAnimationFrame(step);
