@@ -1,6 +1,6 @@
 <!doctype html><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>Warm Healing — Natural Clouds</title>
+<title>Warm Healing — Natural Clouds (iOS-safe)</title>
 <style>
 html,body{margin:0;height:100%;overflow:hidden;background:#0b0605;font:12px ui-monospace,Menlo,Consolas,monospace}
 canvas{position:fixed;inset:0;display:block}
@@ -43,7 +43,7 @@ try{
 // ---------- Size / DPR ----------
 let W=0,H=0,DPR=1;
 function resize(){
-  DPR=clamp(devicePixelRatio||1,1,2); // iOS更稳，且够细腻
+  DPR=clamp(devicePixelRatio||1,1,2);
   W=innerWidth; H=innerHeight;
   for(const c of [bg,fx]){
     c.width=Math.max(2,Math.floor(W*DPR));
@@ -53,8 +53,7 @@ function resize(){
   B.setTransform(DPR,0,0,DPR,0,0);
   F.setTransform(DPR,0,0,DPR,0,0);
 }
-addEventListener("resize",resize,{passive:true});
-resize();
+addEventListener("resize",resize,{passive:true}); resize();
 
 // ---------- RNG ----------
 function makeRng(seed){ let s=seed>>>0; return ()=>((s=(s*1664525+1013904223)>>>0)&0xfffffff)/0xfffffff; }
@@ -72,7 +71,7 @@ function rgb2hsv(r,g,b){
   return [h,s,v];
 }
 
-// ---------- Palettes ----------
+// ---------- Palettes (warm healing, no purple/magenta) ----------
 const PALS=[
   ["#FFF6EE","#FFE2C2","#E5A877","#FFF9F4"],
   ["#FFF4EA","#FFDAB3","#E6A27A","#FFF8F2"],
@@ -81,7 +80,7 @@ const PALS=[
   ["#FFF6F0","#FFE0BA","#E3A16F","#FFF9F4"],
 ];
 
-// ---------- Cloud noise texture ----------
+// ---------- Noise helpers for cloud texture ----------
 function hash2(ix,iy,seed){
   let x=(ix*374761393+iy*668265263)^(seed*1442695041);
   x=(x^(x>>>13))*1274126177;
@@ -100,33 +99,43 @@ function fbm2(x,y,seed){
   return f;
 }
 
-let cloudTex=null, cloudPat=null;
-function buildCloudTex(seed){
-  const N=256;
+// ---------- Cloud texture built ONCE (prevents “pattern source missing” on iOS) ----------
+let cloudTex=null;
+function buildCloudTexOnce(){
+  const seed=1337, N=256;
   const c=document.createElement("canvas"); c.width=c.height=N;
   const ctx=c.getContext("2d",{alpha:false});
   const img=ctx.createImageData(N,N), d=img.data;
-  for(let y=0;y<N;y++){
-    for(let x=0;x<N;x++){
-      const nx=x/N, ny=y/N;
-      const v=fbm2(nx*2.2, ny*2.2, seed);
-      const t=clamp((v-0.45)/0.30,0,1);
-      const c2=t*t*(3-2*t);
-      const g=(c2*255)|0;
-      const i=(y*N+x)*4;
-      d[i]=g; d[i+1]=g; d[i+2]=g; d[i+3]=255;
-    }
+  for(let y=0;y<N;y++)for(let x=0;x<N;x++){
+    const nx=x/N, ny=y/N;
+    const v=fbm2(nx*2.2, ny*2.2, seed);
+    const t=clamp((v-0.45)/0.30,0,1);
+    const s=t*t*(3-2*t);
+    const g=(s*255)|0;
+    const i=(y*N+x)*4;
+    d[i]=g; d[i+1]=g; d[i+2]=g; d[i+3]=255;
   }
   ctx.putImageData(img,0,0);
-  cloudTex=c; cloudPat=null;
+  cloudTex=c;
 }
-function getCloudPat(){
-  if(!cloudPat) cloudPat=B.createPattern(cloudTex,"repeat");
-  return cloudPat;
+buildCloudTexOnce();
+
+// Pattern cache per-ctx (B ctx and preview ctx must NOT share createPattern)
+const cloudPatternCache=new WeakMap();
+function getCloudPat(ctx){
+  if(!cloudTex) return null;
+  let p=cloudPatternCache.get(ctx);
+  if(p) return p;
+  try{
+    p=ctx.createPattern(cloudTex,"repeat");
+    if(!p) return null; // iOS may return null
+    cloudPatternCache.set(ctx,p);
+    return p;
+  }catch(e){ return null; }
 }
 
-// ---------- Grain (dithering) ----------
-let grainTex=null, grainPat=null;
+// ---------- Grain texture (built per-candidate seed, but safe) ----------
+let grainTex=null;
 function buildGrain(seed){
   const N=256;
   const c=document.createElement("canvas"); c.width=c.height=N;
@@ -142,9 +151,11 @@ function buildGrain(seed){
     d[i]=255; d[i+1]=255; d[i+2]=255; d[i+3]=a;
   }
   ctx.putImageData(img,0,0);
-  grainTex=c; grainPat=null;
+  grainTex=c;
 }
+let grainPat=null;
 function drawGrain(time,amount){
+  if(!grainTex) return;
   if(!grainPat) grainPat=F.createPattern(grainTex,"repeat");
   F.clearRect(0,0,W,H);
   F.globalAlpha=amount*(0.92+0.08*Math.sin(time*2.0));
@@ -172,7 +183,7 @@ function genCandidate(seed){
   return {seed,base,cloudA,cloudS,cloudV,rippleA,rippleV,warmth,vign,grain,feat,score:0};
 }
 
-// ---------- Render ----------
+// ---------- Render (ctx-agnostic; uses ctx.createPattern safely) ----------
 function render(ctx,w,h,c,t){
   const [top,mid,low,glow]=c.base;
   const breathe=0.5+0.5*Math.sin(t*0.16);
@@ -188,19 +199,21 @@ function render(ctx,w,h,c,t){
   sky.addColorStop(1, low2);
   ctx.fillStyle=sky; ctx.fillRect(0,0,w,h);
 
-  // cloud texture
-  ctx.save();
-  ctx.globalCompositeOperation="soft-light";
-  ctx.globalAlpha=0.70;
-  const pat=getCloudPat();
-  const sx=(1/(c.cloudS))*w/256, sy=(1/(c.cloudS))*h/256;
-  const dx=(Math.sin(t*c.cloudV*6.0)*0.06 + Math.sin(t*0.03))*w;
-  const dy=(Math.cos(t*c.cloudV*5.0)*0.05 + Math.cos(t*0.028))*h;
-  ctx.translate(dx,dy);
-  ctx.scale(sx,sy);
-  ctx.fillStyle=pat;
-  ctx.fillRect(-512,-512,(w/sx)+1024,(h/sy)+1024);
-  ctx.restore();
+  // cloud texture (skip if pattern fails)
+  const pat=getCloudPat(ctx);
+  if(pat){
+    ctx.save();
+    ctx.globalCompositeOperation="soft-light";
+    ctx.globalAlpha=0.70;
+    const sx=(1/(c.cloudS))*w/256, sy=(1/(c.cloudS))*h/256;
+    const dx=(Math.sin(t*c.cloudV*6.0)*0.06 + Math.sin(t*0.03))*w;
+    const dy=(Math.cos(t*c.cloudV*5.0)*0.05 + Math.cos(t*0.028))*h;
+    ctx.translate(dx,dy);
+    ctx.scale(sx,sy);
+    ctx.fillStyle=pat;
+    ctx.fillRect(-512,-512,(w/sx)+1024,(h/sy)+1024);
+    ctx.restore();
+  }
 
   // light well
   ctx.globalCompositeOperation="soft-light";
@@ -239,12 +252,11 @@ function render(ctx,w,h,c,t){
   ctx.globalCompositeOperation="source-over";
 }
 
-// ---------- Scoring preview (single declaration, no duplicate consts) ----------
+// ---------- Scoring preview ----------
 const PREVIEW=72;
 const pre=document.createElement("canvas"); pre.width=pre.height=PREVIEW;
 const P=pre.getContext("2d",{alpha:false});
 
-// analysis
 function analyze(img){
   const d=img.data, n=img.width*img.height;
   let warm=0,purple=0,dark=0,hot=0,muddy=0,satSum=0,lumSum=0,lum2=0;
@@ -280,6 +292,7 @@ function similarity(a,b){
   for(let i=0;i<a.length;i++){ dot+=a[i]*b[i]; na+=a[i]*a[i]; nb+=b[i]*b[i]; }
   return dot/Math.sqrt((na*nb)+1e-9);
 }
+
 function scoreCandidate(c){
   const times=[0.8,2.2,3.7];
   let sum=0, best=0;
@@ -298,7 +311,8 @@ function scoreCandidate(c){
     const pHot =100*clamp((a.hotP-0.03)/0.10,0,1);
 
     let s = 0.26*sWarm + 0.30*sLum + 0.14*sCon + 0.10*sSat
-            -0.20*pMud - 0.22*pPur - 0.06*pDark - 0.06*pHot;
+           -0.20*pMud - 0.22*pPur - 0.06*pDark - 0.06*pHot;
+
     s=clamp(s,0,100);
     sum+=s; if(s>best) best=s;
   }
@@ -328,12 +342,14 @@ function findHigh(maxTry=18, threshold=82){
   }
   return best;
 }
+
 function apply(c){
   current=c;
-  buildCloudTex(c.seed ^ 0xA53A1F3);
   buildGrain(c.seed ^ 0x9E3779B9);
+  grainPat=null;
   HISTORY.unshift(c.feat.slice()); if(HISTORY.length>HIST_MAX) HISTORY.pop();
 }
+
 function scheduleNext(){
   let tries=0, best=null, bestS=-1;
   const step=()=>{
