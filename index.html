@@ -1,113 +1,126 @@
 <!doctype html><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>Ambient Gradient Field · Debug Speed</title>
+<title>Ambient Gradient Field · Prev vs Current</title>
 <style>
 html,body{margin:0;height:100%;overflow:hidden;background:#050505}
 canvas{position:fixed;inset:0;display:block}
+#hud{position:fixed;left:12px;top:12px;right:12px;z-index:5;
+font:12px ui-monospace,Menlo,Consolas,monospace;color:#fff;mix-blend-mode:screen;
+background:rgba(0,0,0,.25);border:1px solid rgba(255,255,255,.15);
+border-radius:12px;padding:10px 12px;backdrop-filter:blur(10px)}
 </style>
 <canvas id="c"></canvas>
+<div id="hud">DEBUG · 左=上一个背景 · 右=当前背景（每 3 秒切换，平滑过渡）</div>
 
 <script>
 (()=>{"use strict";
-const C=document.getElementById("c"), ctx=C.getContext("2d",{alpha:false});
+const C=document.getElementById("c"),ctx=C.getContext("2d",{alpha:false});
 const clamp=(x,a,b)=>x<a?a:x>b?b:x;
 const lerp=(a,b,t)=>a+(b-a)*t;
 const mix3=(A,B,t)=>[lerp(A[0],B[0],t),lerp(A[1],B[1],t),lerp(A[2],B[2],t)];
 const rgb=(c,a=1)=>`rgba(${c[0]|0},${c[1]|0},${c[2]|0},${a})`;
 
-// ======================
-// 🔥 DEBUG SPEED CONTROL
-// ======================
-const SPEED = 12; // ← 调试用：5 秒内明显变化；最终版改回 1
-// ======================
-
 let W=0,H=0,DPR=1;
 function resize(){
   DPR=Math.min(devicePixelRatio||1,2);
-  W=innerWidth; H=innerHeight;
+  W=innerWidth;H=innerHeight;
   C.width=(W*DPR)|0; C.height=(H*DPR)|0;
   C.style.width=W+"px"; C.style.height=H+"px";
   ctx.setTransform(DPR,0,0,DPR,0,0);
 }
-addEventListener("resize",resize,{passive:true});
-resize();
+addEventListener("resize",resize,{passive:true}); resize();
 
-// -------- slow drivers (same logic, faster time) --------
-const PHI=1.61803398875, SQ2=1.41421356237, PI=Math.PI;
-const s1=(t,a,b,c)=>Math.sin(t*a)+0.72*Math.sin(t*b+1.7)+0.46*Math.sin(t*c+0.31);
-function slow01(t,rate,seed){
-  const r=rate*(1+0.017*seed);
-  const x=s1(t*r, r*PHI*(1+0.011*seed), r*SQ2*(1+0.013*seed), r*PI*(1+0.009*seed));
-  return 0.5+0.5*(x/2.15);
-}
-const ease=x=>x*x*(3-2*x);
-
-// -------- palettes --------
-const P0={top:[252,248,242], mid:[238,224,204], low:[214,182,140], ink:[28,22,18]};
-const P1={top:[251,246,239], mid:[236,219,196], low:[208,170,126], ink:[26,20,16]};
-const P2={top:[252,247,240], mid:[233,214,188], low:[200,162,120], ink:[24,18,14]};
-
-function paletteAt(t){
-  const p=ease(slow01(t*SPEED,0.00105,7));
-  const q=ease(slow01(t*SPEED,0.00082,9));
-  const A=p<0.5?P0:P1, B=p<0.5?P1:P2;
-  const tt=p<0.5?p/0.5:(p-0.5)/0.5;
-  const top=mix3(A.top,B.top,tt);
-  const mid=mix3(A.mid,B.mid,tt);
-  const low=mix3(A.low,B.low,tt);
-  const ink=mix3(A.ink,B.ink,tt);
-  const warm=(q-0.5)*0.045;
+// ===== 状态生成（确定性，便于复现）=====
+function rand(seed){return ()=>((seed=(seed*1664525+1013904223)>>>0)&0xfffffff)/0xfffffff;}
+function makeState(seed){
+  const r=rand(seed>>>0);
+  // 只做“环境场”参数：位置/色温/亮度层级（无形状、无纹理）
   return {
-    top:mix3(top,[255,255,255],0.010+warm),
-    mid:mix3(mid,[255,255,255],0.008+warm*0.7),
-    low:mix3(low,ink,0.058),
-    ink
+    gx:0.42+0.16*r(),   // radial center x
+    gy:0.44+0.16*r(),   // radial center y
+    warm:0.010+0.035*r(), // tiny warm lift
+    deep:0.050+0.020*r(), // dark mix at edges (cashmere-ish)
+    air: 0.10+0.08*r()    // vertical air layer
+  };
+}
+function lerpState(a,b,t){
+  return {
+    gx:lerp(a.gx,b.gx,t),
+    gy:lerp(a.gy,b.gy,t),
+    warm:lerp(a.warm,b.warm,t),
+    deep:lerp(a.deep,b.deep,t),
+    air: lerp(a.air, b.air, t)
   };
 }
 
-function drawAmbient(t){
-  const P=paletteAt(t);
-  const breathe=1+(slow01(t*SPEED,0.003,3)-0.5)*0.016;
+// ===== 固定暖中性调色盘（调试版先锁死）=====
+const P={top:[252,248,242], mid:[238,224,204], low:[214,182,140], ink:[28,22,18]};
 
-  const gx=W*(0.48+(slow01(t*SPEED,0.0011,5)-0.5)*0.09);
-  const gy=H*(0.50+(slow01(t*SPEED,0.0013,6)-0.5)*0.09);
+// ===== 切换参数 =====
+const STEP=3.0;   // 每 3 秒换一次
+const FADE=0.7;   // 过渡时长（可调：0.5~1.0 都行）
 
-  const base=ctx.createRadialGradient(
-    gx,gy,Math.min(W,H)*0.07,
-    gx,gy,Math.max(W,H)*0.98
-  );
-  base.addColorStop(0,rgb(P.top));
-  base.addColorStop(0.46,rgb(P.mid));
-  base.addColorStop(1,rgb(P.low));
-  ctx.fillStyle=base;
-  ctx.fillRect(0,0,W,H);
+// ===== 三态：prev / cur / next =====
+let i=0;
+let prev=makeState(0);
+let cur =makeState(1);
+let next=makeState(2);
+let tSwitch=0;
 
-  // weight fields (更容易观察）
+// ease for fade (更像“状态变化”，不像动画)
+const ease=x=>x*x*(3-2*x);
+
+function drawField(state,x0,w){
+  // base radial field
+  const gx=x0 + w*state.gx;
+  const gy=H*state.gy;
+  const g=ctx.createRadialGradient(gx,gy, Math.min(w,H)*0.07, gx,gy, Math.max(w,H)*1.05);
+  g.addColorStop(0, rgb(mix3(P.top,[255,255,255],state.warm)));
+  g.addColorStop(0.48, rgb(P.mid));
+  g.addColorStop(1, rgb(mix3(P.low,P.ink,state.deep)));
+  ctx.fillStyle=g;
+  ctx.fillRect(x0,0,w,H);
+
+  // gentle vertical “air”
+  ctx.save();
   ctx.globalCompositeOperation="soft-light";
-  [
-    [0.62,0.42,0.62,7],
-    [0.27,0.24,0.48,11],
-    [0.53,0.84,0.72,17],
-  ].forEach(n=>{
-    const du=(slow01(t*SPEED,0.001,n[3])-0.5)*0.07;
-    const dv=(slow01(t*SPEED,0.0012,n[3]+1)-0.5)*0.07;
-    const cx=W*(n[0]+du), cy=H*(n[1]+dv);
-    const r=Math.max(W,H)*n[2]*(0.95+0.05*breathe);
-    const g=ctx.createRadialGradient(cx,cy,0,cx,cy,r);
-    g.addColorStop(0,"rgba(255,240,220,0.22)");
-    g.addColorStop(0.45,"rgba(255,240,220,0.08)");
-    g.addColorStop(1,"rgba(255,255,255,0)");
-    ctx.fillStyle=g;
-    ctx.fillRect(0,0,W,H);
-  });
-  ctx.globalCompositeOperation="source-over";
+  const air=ctx.createLinearGradient(0,0,0,H);
+  air.addColorStop(0, `rgba(255,252,248,${0.12*state.air})`);
+  air.addColorStop(0.55,"rgba(255,255,255,0)");
+  air.addColorStop(1, `rgba(0,0,0,${0.06*state.air})`);
+  ctx.fillStyle=air;
+  ctx.fillRect(x0,0,w,H);
+  ctx.restore();
 }
 
 let t0=performance.now();
 function tick(now){
   requestAnimationFrame(tick);
   const t=(now-t0)*0.001;
-  drawAmbient(t);
+  const half=W*0.5;
+
+  // 状态更新：每 STEP 秒进入一次切换窗口
+  const local=t-tSwitch;
+  if(local>=STEP){
+    // 完成一次“当前”确定：prev <- cur, cur <- next, next <- 新生成
+    i++;
+    prev=cur;
+    cur=next;
+    next=makeState(i+2);
+    tSwitch=t;
+  }
+
+  // 右边：如果在 FADE 时间内，就从 cur 过渡到 next；否则保持 cur
+  const k = clamp(local/FADE,0,1);
+  const sRight = (k<1) ? lerpState(cur,next,ease(k)) : cur;
+
+  // 绘制：左=prev（上一个完整背景）；右=当前（含过渡）
+  drawField(prev, 0, half);
+  drawField(sRight, half, half);
+
+  // 分割线（仅调试）
+  ctx.fillStyle="rgba(255,255,255,0.12)";
+  ctx.fillRect(half-0.5,0,1,H);
 }
 requestAnimationFrame(tick);
 })();
