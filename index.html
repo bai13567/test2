@@ -39,6 +39,7 @@
   const c = document.getElementById("c");
   const errorMessageElement = document.getElementById("errorMessage");
 
+  // Initialize WebGL context
   const gl = c.getContext("webgl", { antialias: true, alpha: false });
   if (!gl) {
     showErrorMessage("WebGL not supported.");
