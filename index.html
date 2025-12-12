@@ -2,7 +2,7 @@
 <html lang="zh">
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
-<title>Cloudy Sky (Visible)</title>
+<title>Sky + White Clouds (fixed mask)</title>
 <style>
   html,body{margin:0;height:100%;overflow:hidden;background:#eaf4ff}
   canvas{position:fixed;inset:0;width:100%;height:100%;display:block}
@@ -30,18 +30,6 @@
     for(int i=0;i<6;i++){ v+=a*noise(p); p=p*1.95+19.7; a*=.52; }
     return v;
   }
-  // ridged noise：更像“棉花云团”
-  float ridged(vec2 p){
-    float s=0., a=.7;
-    for(int i=0;i<5;i++){
-      float n = noise(p);
-      n = 1.0 - abs(2.0*n - 1.0);
-      s += a*n;
-      p = p*2.0 + 13.1;
-      a *= 0.55;
-    }
-    return s;
-  }
   float dither(vec2 p){return (hash(p+fract(t))*2.0-1.0)/255.0;}
 
   void main(){
@@ -49,64 +37,60 @@
     vec2 p = uv*2.0 - 1.0;
     p.x *= r.x/r.y;
 
-    // sky (稍微更有层次，避免太“平”)
+    // sky
     vec3 skyTop = vec3(0.70,0.86,1.00);
     vec3 skyMid = vec3(0.84,0.93,1.00);
     vec3 skyBot = vec3(0.95,0.98,1.00);
-    float gy = smoothstep(-1.0,1.0,p.y);
+    float gy = smoothstep(-1.0, 1.0, p.y);
     vec3 sky = mix(skyBot, skyMid, smoothstep(0.0,0.55,gy));
     sky = mix(sky,   skyTop, smoothstep(0.55,1.0,gy));
-    sky += dither(gl_FragCoord.xy)*vec3(1.0);
+    sky += dither(gl_FragCoord.xy);
 
-    // 时间（稍微快一点，你现在太慢也像“没变化”）
-    float tt = t*0.06;
-    vec2 a = vec2( tt*0.60,  tt*0.28);
-    vec2 b = vec2(-tt*0.40,  tt*0.22);
-    vec2 c0= vec2( tt*0.18, -tt*0.35);
+    // time
+    float tt = t*0.055;
+    vec2 a = vec2( tt*0.55,  tt*0.25);
+    vec2 b = vec2(-tt*0.35,  tt*0.18);
 
-    // 云尺度：调大（你现在太“细小/淡”）
-    vec2 q = p * 0.62;
+    // cloud field (big shapes)
+    vec2 q = p * 0.70;
 
-    // 域扭曲：让云“形变”而非平移
+    // warp to avoid "texture sliding"
     float w1 = fbm(q*1.1 + a);
     float w2 = fbm(q*1.9 + b);
-    q += 0.33 * vec2(w1-0.5, w2-0.5);
+    q += 0.30 * vec2(w1-0.5, w2-0.5);
 
-    // 密度场：低频决定“哪里有云”，ridged 提供“云团”
     float low  = fbm(q*0.85 + a);
     float mid  = fbm(q*1.60 + b);
-    float puff = ridged(q*1.20 + c0);   // 关键：让云变“棉”
+    float fine = fbm(q*4.50 + b);
 
-    // 对比增强：让云从雾变团（但仍是白云）
-    float dens = low*0.55 + mid*0.20 + puff*0.45;
-    dens = clamp(dens,0.0,1.0);
-    dens = smoothstep(0.30, 0.95, dens); // 提升整体对比
+    // density with contrast
+    float dens = low*0.62 + mid*0.28 + fine*0.10;
+    dens = smoothstep(0.25, 0.95, dens);
 
-    // 覆盖率控制（你现在是“没云”，所以阈值必须更低）
-    float cloud = smoothstep(0.40, 0.65, dens); // <<<<<< 核心：更容易出云
-    cloud = pow(cloud, 1.25);
+    // IMPORTANT: reduce coverage (so not full-screen cloud)
+    // 调这两个数：越大云越少；越小云越多
+    float cloud = smoothstep(0.58, 0.76, dens);
 
-    // 边缘纤维：只在边缘起作用
-    float fine = fbm(q*4.8 + b);
-    float rim = smoothstep(0.12,0.55,cloud) * (1.0 - smoothstep(0.55,0.95,cloud));
-    cloud *= 0.90 + 0.18*fine*rim;
+    // put clouds more in upper sky (realistic)
+    float height = smoothstep(-0.15, 0.85, p.y); // bottom less clouds
+    cloud *= height;
 
-    // 云内部厚薄明暗（非常轻，绝不会变乌云）
-    float shade = 0.96 + 0.06*(fine-0.5);
-    shade = clamp(shade, 0.92, 1.03);
+    // soften/texture only on cloud edge (avoid holes)
+    float rim = smoothstep(0.12,0.55,cloud) * (1.0 - smoothstep(0.55,0.98,cloud));
+    cloud *= 0.92 + 0.14*fine*rim;
 
-    vec3 cloudCol = vec3(1.0,0.997,0.990) * shade;
+    // cloud shading (very light, never dark)
+    float shade = clamp(0.96 + 0.05*(fine-0.5), 0.92, 1.02);
+    vec3 cloudCol = vec3(1.0, 0.997, 0.990) * shade;
 
-    // 银边高光：让云更“蓬”
+    // slight silver lining
     float silver = smoothstep(0.70, 0.98, fine) * rim;
-    cloudCol = mix(cloudCol, vec3(1.0), 0.18*silver);
+    cloudCol = mix(cloudCol, vec3(1.0), 0.16*silver);
 
-    // 合成：云更“实”（你现在的图云太淡）
-    vec3 col = mix(sky, cloudCol, clamp(cloud*1.55, 0.0, 1.0));
-
-    col = clamp(col,0.0,1.0);
-    col = pow(col, vec3(0.99));
-    gl_FragColor = vec4(col,1.0);
+    // composite (clouds over sky) - no inverted mask, no "blue hole"
+    vec3 col = mix(sky, cloudCol, clamp(cloud*1.25, 0.0, 1.0));
+    col = clamp(col, 0.0, 1.0);
+    gl_FragColor = vec4(col, 1.0);
   }`;
 
   function sh(type,src){
@@ -148,7 +132,6 @@
 
   let t0=performance.now(), paused=false;
   document.addEventListener("visibilitychange",()=>paused=document.hidden,{passive:true});
-
   (function loop(now){
     if(!paused){
       gl.uniform1f(ut,(now-t0)/1000);
