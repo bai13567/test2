@@ -1,225 +1,175 @@
 <!doctype html>
 <html lang="zh">
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
-<title>Volumetric Clouds with Error Reporting</title>
-<style>
-  html, body {
-    margin: 0;
-    height: 100%;
-    overflow: hidden;
-    background: #eef6ff;
-  }
-  canvas {
-    position: fixed;
-    inset: 0;
-    width: 100%;
-    height: 100%;
-    display: block;
-    touch-action: none;
-  }
-  #errorMessage {
-    position: fixed;
-    top: 20px;
-    left: 20px;
-    padding: 10px;
-    background-color: rgba(255, 0, 0, 0.8);
-    color: white;
-    font-size: 16px;
-    border-radius: 5px;
-    display: none;
-    z-index: 9999;
-  }
-</style>
-<canvas id="c"></canvas>
-<div id="errorMessage"></div>
-
-<script>
-(() => {
-  const c = document.getElementById("c");
-  const errorMessageElement = document.getElementById("errorMessage");
-
-  const gl = c.getContext("webgl", { antialias: true, alpha: false });
-  if (!gl) {
-    showErrorMessage("WebGL not supported.");
-    return;
-  }
-
-  // Test WebGL capabilities
-  const glVersion = gl.getParameter(gl.VERSION);
-  console.log("WebGL Version: ", glVersion);
-  
-  // Check if WebGL extension is supported
-  if (!gl.getExtension("OES_standard_derivatives")) {
-    showErrorMessage("WebGL error: OES_standard_derivatives extension is not available.");
-    return;
-  }
-
-  function showErrorMessage(message) {
-    console.error(message); // Log to the browser console as well
-    errorMessageElement.innerText = message;
-    errorMessageElement.style.display = 'block';
-  }
-
-  const V = `attribute vec2 p;
-    void main() {
-      gl_Position = vec4(p, 0.0, 1.0);
-    }`;
-
-  const F = `precision highp float;
-  uniform vec2 r;
-  uniform float t;
-
-  // ----------------- Hash & Noise -----------------
-  float hash11(float n) { return fract(sin(n) * 43758.5453123); }
-  float hash31(vec3 p) { return hash11(dot(p, vec3(127.1, 311.7, 74.7))); }
-  float noise3(vec3 p) {
-    vec3 i = floor(p), f = fract(p);
-    f = f * f * (3.0 - 2.0 * f);
-    float n000 = hash31(i + vec3(0.0, 0.0, 0.0));
-    float n100 = hash31(i + vec3(1.0, 0.0, 0.0));
-    float n010 = hash31(i + vec3(0.0, 1.0, 0.0));
-    float n110 = hash31(i + vec3(1.0, 1.0, 0.0));
-    float n001 = hash31(i + vec3(0.0, 0.0, 1.0));
-    float n101 = hash31(i + vec3(1.0, 0.0, 1.0));
-    float n011 = hash31(i + vec3(0.0, 1.0, 1.0));
-    float n111 = hash31(i + vec3(1.0, 1.0, 1.0));
-    float nx00 = mix(n000, n100, f.x);
-    float nx10 = mix(n010, n110, f.x);
-    float nx01 = mix(n001, n101, f.x);
-    float nx11 = mix(n011, n111, f.x);
-    float nxy0 = mix(nx00, nx10, f.y);
-    float nxy1 = mix(nx01, nx11, f.y);
-    return mix(nxy0, nxy1, f.z);
-  }
-
-  // ----------------- Cloud Density Field -----------------
-  float fbm3(vec3 p) {
-    float v = 0.0, a = 0.58;
-    for (int i = 0; i < 6; i++) {
-      v += a * noise3(p);
-      p = p * 2.02 + vec3(19.7, 7.3, 11.1);
-      a *= 0.52;
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+  <title>Volumetric Clouds with Error Reporting</title>
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      overflow: hidden;
+      background: #eef6ff;
     }
-    return v;
-  }
-
-  // Cloud Density Function with Height Influence
-  float cloudField(vec3 P) {
-    float base = fbm3(P * 0.55);
-    float detail = fbm3(P * 2.2);
-    vec3 warp = vec3(
-      fbm3(P * 1.1 + 10.0),
-      fbm3(P * 1.1 + 30.0),
-      fbm3(P * 1.1 + 50.0)
-    );
-    P += (warp - 0.5) * 0.55;
-    float d = base * 0.78 + detail * 0.22;
-    d = smoothstep(0.48, 0.78, d);
-    d = pow(d, 1.35);
-    return d;
-  }
-
-  // ----------------- Multiple Scattering Approximation -----------------
-  vec3 multiScatterApprox(vec3 single, float density, float TrL) {
-    float ms = 1.0 - exp(-density * 2.5);
-    return single * (1.0 + ms * 0.6) * (0.7 + 0.3 * TrL);
-  }
-
-  // ----------------- Light and Shadow -----------------
-  float lightTransmittance(vec3 p, vec3 L) {
-    float Tr = 1.0;
-    const int LS = 24;
-    float stepLen = 0.085;
-    for (int i = 0; i < LS; i++) {
-        p += L * stepLen;
-        float d = cloudField(p);
-        Tr *= exp(-d * 1.35 * stepLen * 6.5);
-        if (Tr < 0.02) break;
+    canvas {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      display: block;
+      touch-action: none;
     }
-    return clamp(Tr, 0.0, 1.0);
-  }
-
-  // ----------------- Tone Mapping -----------------
-  vec3 tonemap(vec3 x) {
-    x = max(x, vec3(0.0));
-    return (x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14);
-  }
-
-  // Shader Program Compilation and Linking
-  const vertexShader = gl.createShader(gl.VERTEX_SHADER);
-  gl.shaderSource(vertexShader, V);
-  gl.compileShader(vertexShader);
-  if (!gl.getShaderParameter(vertexShader, gl.COMPILE_STATUS)) {
-    showErrorMessage("Vertex shader compilation failed: " + gl.getShaderInfoLog(vertexShader));
-    return;
-  }
-
-  const fragmentShader = gl.createShader(gl.FRAGMENT_SHADER);
-  gl.shaderSource(fragmentShader, F);
-  gl.compileShader(fragmentShader);
-  if (!gl.getShaderParameter(fragmentShader, gl.COMPILE_STATUS)) {
-    showErrorMessage("Fragment shader compilation failed: " + gl.getShaderInfoLog(fragmentShader));
-    return;
-  }
-
-  const shaderProgram = gl.createProgram();
-  gl.attachShader(shaderProgram, vertexShader);
-  gl.attachShader(shaderProgram, fragmentShader);
-  gl.linkProgram(shaderProgram);
-  if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
-    showErrorMessage("Shader program linking failed.");
-    return;
-  }
-  gl.useProgram(shaderProgram);
-
-  // Set WebGL clear color
-  gl.clearColor(0.93, 0.96, 1.0, 1.0); // Set background color (light blue)
-
-  const positionLocation = gl.getAttribLocation(shaderProgram, "p");
-  const rLocation = gl.getUniformLocation(shaderProgram, "r");
-  const tLocation = gl.getUniformLocation(shaderProgram, "t");
-
-  // Set uniform values
-  gl.uniform2fv(rLocation, [c.width, c.height]);
-  gl.uniform1f(tLocation, performance.now() / 1000);
-
-  function renderClouds() {
-    try {
-      gl.clear(gl.COLOR_BUFFER_BIT);
-
-      // Setup vertex data and draw
-      const vertices = new Float32Array([
-        -1.0, -1.0,
-        1.0, -1.0,
-        0.0, 1.0,
-        -1.0, -1.0,
-        0.0, 1.0,
-        1.0, -1.0
-      ]);
-
-      const buffer = gl.createBuffer();
-      gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-      gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
-      gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
-      gl.enableVertexAttribArray(positionLocation);
-
-      gl.drawArrays(gl.TRIANGLES, 0, 6);
-    } catch (error) {
-      showErrorMessage("Rendering failed: " + error.message);
+    #errorMessage {
+      position: fixed;
+      top: 20px;
+      left: 20px;
+      padding: 10px;
+      background-color: rgba(255, 0, 0, 0.8);
+      color: white;
+      font-size: 16px;
+      border-radius: 5px;
+      display: none;
+      z-index: 9999;
     }
-  }
+  </style>
+  <canvas id="c"></canvas>
+  <div id="errorMessage"></div>
 
-  function mainLoop() {
-    try {
-      renderClouds();
-    } catch (error) {
-      showErrorMessage("Rendering failed: " + error.message);
-    }
-    requestAnimationFrame(mainLoop);
-  }
+  <script>
+    (() => {
+      // Initialize the canvas and WebGL context
+      const c = document.getElementById("c");
+      const errorMessageElement = document.getElementById("errorMessage");
 
-  mainLoop(); // start rendering loop
-})();
-</script>
+      // Create WebGL context
+      const gl = c.getContext("webgl", { antialias: true, alpha: false });
+      if (!gl) {
+        showErrorMessage("WebGL not supported.");
+        return;
+      }
+
+      // Test WebGL capabilities
+      const glVersion = gl.getParameter(gl.VERSION);
+      console.log("WebGL Version: ", glVersion);
+
+      // Check if WebGL extension is supported
+      if (!gl.getExtension("OES_standard_derivatives")) {
+        showErrorMessage("WebGL error: OES_standard_derivatives extension is not available.");
+        return;
+      }
+
+      function showErrorMessage(message) {
+        console.error(message); // Log to the browser console as well
+        errorMessageElement.innerText = message;
+        errorMessageElement.style.display = 'block';
+      }
+
+      // Define the vertex shader (V)
+      const V = `
+        attribute vec2 p;
+        void main() {
+          gl_Position = vec4(p, 0.0, 1.0);
+        }`;
+
+      // Define the fragment shader (F)
+      const F = `
+        precision highp float;
+        uniform vec2 r;
+        uniform float t;
+
+        // ----------------- Hash & Noise -----------------
+        float hash11(float n) { return fract(sin(n) * 43758.5453123); }
+        float hash31(vec3 p) { return hash11(dot(p, vec3(127.1, 311.7, 74.7))); }
+        float noise3(vec3 p) {
+          vec3 i = floor(p), f = fract(p);
+          f = f * f * (3.0 - 2.0 * f);
+          float n000 = hash31(i + vec3(0.0, 0.0, 0.0));
+          float n100 = hash31(i + vec3(1.0, 0.0, 0.0));
+          float n010 = hash31(i + vec3(0.0, 1.0, 0.0));
+          float n110 = hash31(i + vec3(1.0, 1.0, 0.0));
+          float n001 = hash31(i + vec3(0.0, 0.0, 1.0));
+          float n101 = hash31(i + vec3(1.0, 0.0, 1.0));
+          float n011 = hash31(i + vec3(0.0, 1.0, 1.0));
+          float n111 = hash31(i + vec3(1.0, 1.0, 1.0));
+          float nx00 = mix(n000, n100, f.x);
+          float nx10 = mix(n010, n110, f.x);
+          float nx01 = mix(n001, n101, f.x);
+          float nx11 = mix(n011, n111, f.x);
+          float nxy0 = mix(nx00, nx10, f.y);
+          float nxy1 = mix(nx01, nx11, f.y);
+          return mix(nxy0, nxy1, f.z);
+        }
+
+        // ----------------- Cloud Density Field -----------------
+        float fbm3(vec3 p) {
+          float v = 0.0, a = 0.58;
+          for (int i = 0; i < 6; i++) {
+            v += a * noise3(p);
+            p = p * 2.02 + vec3(19.7, 7.3, 11.1);
+            a *= 0.52;
+          }
+          return v;
+        }
+
+        // Cloud Density Function with Height Influence
+        float cloudField(vec3 P) {
+          float base = fbm3(P * 0.55);
+          float detail = fbm3(P * 2.2);
+          vec3 warp = vec3(
+            fbm3(P * 1.1 + 10.0),
+            fbm3(P * 1.1 + 30.0),
+            fbm3(P * 1.1 + 50.0)
+          );
+          P += (warp - 0.5) * 0.55;
+          float d = base * 0.78 + detail * 0.22;
+          d = smoothstep(0.48, 0.78, d);
+          d = pow(d, 1.35);
+          return d;
+        }
+
+        // ----------------- Multiple Scattering Approximation -----------------
+        vec3 multiScatterApprox(vec3 single, float density, float TrL) {
+          float ms = 1.0 - exp(-density * 2.5);
+          return single * (1.0 + ms * 0.6) * (0.7 + 0.3 * TrL);
+        }
+
+        // ----------------- Light and Shadow -----------------
+        float lightTransmittance(vec3 p, vec3 L) {
+          float Tr = 1.0;
+          const int LS = 24;
+          float stepLen = 0.085;
+          for (int i = 0; i < LS; i++) {
+              p += L * stepLen;
+              float d = cloudField(p);
+              Tr *= exp(-d * 1.35 * stepLen * 6.5);
+              if (Tr < 0.02) break;
+          }
+          return clamp(Tr, 0.0, 1.0);
+        }
+
+        // ----------------- Tone Mapping -----------------
+        vec3 tonemap(vec3 x) {
+          x = max(x, vec3(0.0));
+          return (x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14);
+        }
+      `;
+
+      // WebGL setup and rendering loop
+      const shaderProgram = initShaderProgram(gl, V, F);
+      gl.useProgram(shaderProgram);
+
+      // Rendering loop
+      function renderClouds() {
+        gl.clear(gl.COLOR_BUFFER_BIT);
+        // Continue rendering logic here
+      }
+
+      function mainLoop() {
+        renderClouds();
+        requestAnimationFrame(mainLoop);
+      }
+
+      mainLoop(); // start the loop
+
+    })(); // <-- Closing the IIFE
+  </script>
 </html>
