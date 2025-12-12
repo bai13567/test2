@@ -2,192 +2,249 @@
 <html lang="zh">
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
-<title>White Clouds (High Contrast)</title>
+<title>Volumetric Clouds with Advanced Techniques</title>
 <style>
-  html,body{margin:0;height:100%;overflow:hidden;background:#eaf3ff}
-  canvas{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none}
+  html, body {
+    margin: 0;
+    height: 100%;
+    overflow: hidden;
+    background: #eef6ff;
+  }
+  canvas {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+    touch-action: none;
+  }
 </style>
 <canvas id="c"></canvas>
 
 <script>
-(()=> {
-  const c=document.getElementById("c");
-  const gl=c.getContext("webgl",{antialias:false,alpha:false}) || c.getContext("experimental-webgl",{antialias:false,alpha:false});
-  if(!gl){
-    const g=c.getContext("2d"); if(!g) return;
-    g.fillStyle="#000"; g.font="16px system-ui";
-    g.fillText("WebGL not supported",20,30);
+(() => {
+  const c = document.getElementById("c");
+  const gl = c.getContext("webgl", { antialias: true, alpha: false });
+  if (!gl) {
+    const g = c.getContext("2d");
+    if (!g) return;
+    g.fillStyle = "#000";
+    g.font = "16px system-ui";
+    g.fillText("WebGL not supported", 20, 30);
     return;
   }
 
-  const V=`attribute vec2 p;void main(){gl_Position=vec4(p,0.,1.);}`;
+  const V = `attribute vec2 p;
+    void main() {
+      gl_Position = vec4(p, 0.0, 1.0);
+    }`;
 
-  // 重点：更强的厚度、阴影、银边、局部对比
-  const F=`precision highp float;
-uniform vec2 r; uniform float t;
+  const F = `precision highp float;
+  uniform vec2 r;
+  uniform float t;
 
-float hash(vec2 p){ return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453123); }
-float noise(vec2 p){
-  vec2 i=floor(p), f=fract(p); f=f*f*(3.-2.*f);
-  float a=hash(i), b=hash(i+vec2(1,0)), c=hash(i+vec2(0,1)), d=hash(i+vec2(1,1));
-  return mix(mix(a,b,f.x), mix(c,d,f.x), f.y);
-}
-float fbm(vec2 p){
-  float v=0., a=.55;
-  for(int i=0;i<6;i++){ v+=a*noise(p); p=p*2.02+17.3; a*=.5; }
-  return v;
-}
-vec2 flow(vec2 p){
-  float e=.08;
-  float n1=fbm(p+vec2(0,e));
-  float n2=fbm(p-vec2(0,e));
-  float n3=fbm(p+vec2(e,0));
-  float n4=fbm(p-vec2(e,0));
-  return vec2(n1-n2, n4-n3);
-}
+  // ----------------- Hash & Noise -----------------
+  float hash11(float n){ return fract(sin(n)*43758.5453123); }
+  float hash31(vec3 p){ return hash11(dot(p, vec3(127.1,311.7,74.7))); }
+  float noise3(vec3 p){
+    vec3 i = floor(p), f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float n000 = hash31(i + vec3(0, 0, 0));
+    float n100 = hash31(i + vec3(1, 0, 0));
+    float n010 = hash31(i + vec3(0, 1, 0));
+    float n110 = hash31(i + vec3(1, 1, 0));
+    float n001 = hash31(i + vec3(0, 0, 1));
+    float n101 = hash31(i + vec3(1, 0, 1));
+    float n011 = hash31(i + vec3(0, 1, 1));
+    float n111 = hash31(i + vec3(1, 1, 1));
+    float nx00 = mix(n000, n100, f.x);
+    float nx10 = mix(n010, n110, f.x);
+    float nx01 = mix(n001, n101, f.x);
+    float nx11 = mix(n011, n111, f.x);
+    float nxy0 = mix(nx00, nx10, f.y);
+    float nxy1 = mix(nx01, nx11, f.y);
+    return mix(nxy0, nxy1, f.z);
+  }
 
-void main(){
-  vec2 uv = gl_FragCoord.xy / r;
-  vec2 p = uv*2.0 - 1.0;
-  p.x *= r.x / r.y;
+  // ----------------- Cloud Density Field -----------------
+  float fbm3(vec3 p){
+    float v = 0.0, a = 0.58;
+    for (int i = 0; i < 6; i++) {
+      v += a * noise3(p);
+      p = p * 2.02 + vec3(19.7, 7.3, 11.1);
+      a *= 0.52;
+    }
+    return v;
+  }
 
-  // 时间：慢速大气流动
-  float tt = t*0.03;
-  vec2 drift = vec2(tt*1.05, tt*0.62);
+  // Cloud Density Function with Height Influence
+  float cloudField(vec3 P){
+    float base = fbm3(P * 0.55);
+    float detail = fbm3(P * 2.2);
+    vec3 warp = vec3(
+      fbm3(P * 1.1 + 10.0),
+      fbm3(P * 1.1 + 30.0),
+      fbm3(P * 1.1 + 50.0)
+    );
+    P += (warp - 0.5) * 0.55;
+    float d = base * 0.78 + detail * 0.22;
+    d = smoothstep(0.48, 0.78, d);
+    d = pow(d, 1.35);
+    return d;
+  }
 
-  // 下厚上薄
-  float h = clamp((p.y+1.0)*0.5, 0.0, 1.0);
-  float layer = mix(1.22, 0.80, h);
-  vec2 q = p*0.98*layer;
+  // ----------------- Multiple Scattering Approximation -----------------
+  vec3 multiScatterApprox(vec3 single, float density, float TrL){
+    float ms = 1.0 - exp(-density * 2.5);
+    return single * (1.0 + ms * 0.6) * (0.7 + 0.3 * TrL);
+  }
 
-  // 卷动扭曲，避免贴图平移感
-  q += 0.22*flow(q*1.2 + drift*0.8) + 0.09*flow(q*2.0 - drift*1.1);
+  // ----------------- Light and Shadow -----------------
+  float lightTransmittance(vec3 p, vec3 L){
+    float Tr = 1.0;
+    const int LS = 24;
+    float stepLen = 0.085;
+    for (int i = 0; i < LS; i++) {
+      p += L * stepLen;
+      float d = cloudField(p);
+      Tr *= exp(-d * 1.35 * stepLen * 6.5);
+      if (Tr < 0.02) break;
+    }
+    return clamp(Tr, 0.0, 1.0);
+  }
 
-  // 三频：形体/细节/纤维
-  float shape  = fbm(q*0.72 + drift*0.55);
-  float detail = fbm(q*1.75 - drift*0.95);
-  float wisps  = fbm(q*3.60 + drift*1.35);
+  // ----------------- Tone Mapping -----------------
+  vec3 tonemap(vec3 x){
+    x = max(x, vec3(0.0));
+    return (x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14);
+  }
 
-  // ⭐ 云量更大（cover 更低 = 更容易有云）
-  float cover = mix(0.46, 0.56, 1.0-h);
-  float base = shape - cover;
+  void main(){
+    vec2 uv = gl_FragCoord.xy / r;
+    vec2 p = uv * 2.0 - 1.0;
+    p.x *= r.x / r.y;
 
-  // mask 与边缘带
-  float m    = smoothstep(-0.12, 0.22, base);
-  float edge = smoothstep(0.22, -0.07, abs(base)); // 边缘附近≈1
+    // Camera setup
+    vec3 ro = vec3(0.0, 0.15, 2.35);
+    vec3 rd = normalize(vec3(p.x, p.y * 0.92, -1.55));
 
-  // ⭐ 密度更厚：内部 + 边缘纤维
-  float dens = m * (0.58 + 0.42*detail);
-  dens += edge * 0.30 * (wisps-0.5);
-  dens = clamp(dens, 0.0, 1.0);
-  dens = clamp(dens*1.35, 0.0, 1.0); // ⭐ 关键：厚度上去
+    // Wind and Cloud Offset
+    float tt = t * 0.045;
+    vec3 wind = vec3(tt * 0.60, tt * 0.22, tt * 0.38);
 
-  // 光照：来自左上
-  vec2 L2 = normalize(vec2(-0.45, 0.90));
+    // Sunlight Direction
+    vec3 sunDir = normalize(vec3(0.65, 0.45, -0.35));
+    float sunStrength = 1.35;
 
-  // 用密度场近似法线（梯度）
-  float e=0.0035;
-  float s1=fbm((q+vec2(e,0))*0.9 + drift*0.55);
-  float s2=fbm((q-vec2(e,0))*0.9 + drift*0.55);
-  float s3=fbm((q+vec2(0,e))*0.9 + drift*0.55);
-  float s4=fbm((q-vec2(0,e))*0.9 + drift*0.55);
-  float dx = s1 - s2;
-  float dy = s3 - s4;
-  vec3 N = normalize(vec3(-dx*2.5, -dy*2.5, 1.0));
+    // Sky Color (lower sky brightness to avoid overexposure on iOS)
+    vec3 skyTop = vec3(0.74, 0.86, 1.00);
+    vec3 skyBot = vec3(0.92, 0.96, 1.00);
+    float h = clamp(p.y * 0.5 + 0.5, 0.0, 1.0);
+    vec3 sky = mix(skyBot, skyTop, pow(h, 1.15));
 
-  // 漫反射 + 轻微顶光偏置（更立体）
-  float ndl = clamp(dot(N, vec3(L2, 0.65)), 0.0, 1.0);
-  float topLight = pow(clamp(N.y*0.5+0.5, 0.0, 1.0), 1.2);
-  float light = clamp(0.18 + 0.70*ndl + 0.12*topLight, 0.0, 1.0);
+    // Cloud Rendering (Volume integration and scattering)
+    vec3 col = sky;
+    float T = 1.0;
+    vec3 S = vec3(0.0);
+    float depthHit = 0.0;
 
-  // ⭐ 厚度阴影：越厚越暗（内部体积感）
-  float thick = dens*dens;
-  float shadow = exp(-3.0*thick);           // 厚处强压暗
-  float inner = mix(0.55, 1.0, shadow);     // 0.55~1.0
+    const int VS = 96;
+    float stepLen = 0.040;
+    float jitter = hash11(gl_FragCoord.x + gl_FragCoord.y * 17.0) * stepLen;
 
-  // ⭐ 银边：边缘更亮（薄云逆光）
-  float rim = pow(1.0 - clamp(dot(N, vec3(0,0,1)), 0.0, 1.0), 2.2);
-  float silver = rim * edge * (0.35 + 0.65*ndl);
+    vec3 pos = ro + rd * jitter;
 
-  // 天空：稍压暗，拉开云对比
-  vec3 skyTop = vec3(0.77, 0.88, 1.00);
-  vec3 skyBot = vec3(0.90, 0.945, 1.00);
-  vec3 sky = mix(skyBot, skyTop, smoothstep(-1.0, 1.0, p.y));
-  sky *= 0.985; // 很轻的整体压暗
+    for (int i = 0; i < VS; i++) {
+      pos += rd * stepLen;
+      if (pos.y < -0.25 || pos.y > 0.85) continue;
 
-  // 云颜色：亮部暖白，阴影冷蓝灰（但别脏）
-  vec3 warm = vec3(1.00, 0.995, 0.985);
-  vec3 cool = vec3(0.70, 0.80, 0.96);
-  vec3 cloudBase = mix(cool, warm, light);
-  cloudBase *= inner; // 体积阴影
+      vec3 P = pos + wind;
 
-  // ⭐ 云遮挡（alpha）更强：更明显、更立体
-  float alpha = clamp(dens*1.75, 0.0, 1.0);
+      float d = cloudField(P);
 
-  // 透射：薄处透更多天空（边缘更柔）
-  float trans = exp(-2.6*thick);
-  float mixAmt = alpha*(0.80 + 0.20*(1.0-trans));
+      if (d > 0.001) {
+        if (depthHit == 0.0) depthHit = float(i) * stepLen;
+        float sigmaA = 2.15;
+        float sigmaS = 3.10;
+        float sigmaT = (sigmaA + sigmaS) * d;
 
-  vec3 col = mix(sky, cloudBase, mixAmt);
+        float att = exp(-sigmaT * stepLen);
+        float a = 1.0 - att;
+        float TrL = lightTransmittance(P, sunDir);
+        float cosTheta = dot(rd, sunDir);
+        float phase = phaseHG(cosTheta, 0.72);
+        vec3 cloudBase = vec3(1.0, 0.995, 0.985);
+        vec3 sunCol = vec3(1.08, 1.02, 0.95) * sunStrength;
+        vec3 scatter = cloudBase * sunCol * TrL * (0.22 + 0.78 * phase);
 
-  // 银边提亮（更明显但控制强度）
-  col = mix(col, vec3(1.0), 0.30*silver);
+        scatter *= mix(1.15, 0.70, smoothstep(0.15, 0.85, d));
+        S += T * scatter * a;
+        T *= att;
 
-  // ⭐ 局部对比增强（不会灰）：S-curve
-  col = clamp(col, 0.0, 1.0);
-  col = col*col*(3.0-2.0*col);     // smoothstep 曲线提升对比
-  col = pow(col, vec3(0.95));      // 轻微提亮白云
+        if (T < 0.02) break;
+      }
+    }
 
-  gl_FragColor = vec4(clamp(col,0.0,1.0), 1.0);
-}`;
+    col = sky * T + S;
 
-  function sh(type,src){
-    const s=gl.createShader(type);
-    gl.shaderSource(s,src);
+    float fog = exp(-max(depthHit, 0.0) * 0.35);
+    col = mix(sky, col, clamp(1.0 - fog * 0.35, 0.0, 1.0));
+
+    col = tonemap(col);
+    col = pow(col, vec3(0.95));
+
+    gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+  }`;
+
+  function sh(type, src) {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src);
     gl.compileShader(s);
-    if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)) throw gl.getShaderInfoLog(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw gl.getShaderInfoLog(s);
     return s;
   }
-  const P=gl.createProgram();
-  gl.attachShader(P,sh(gl.VERTEX_SHADER,V));
-  gl.attachShader(P,sh(gl.FRAGMENT_SHADER,F));
+
+  const P = gl.createProgram();
+  gl.attachShader(P, sh(gl.VERTEX_SHADER, V));
+  gl.attachShader(P, sh(gl.FRAGMENT_SHADER, F));
   gl.linkProgram(P);
-  if(!gl.getProgramParameter(P,gl.LINK_STATUS)) throw gl.getProgramInfoLog(P);
+  if (!gl.getProgramParameter(P, gl.LINK_STATUS)) throw gl.getProgramInfoLog(P);
   gl.useProgram(P);
 
-  const buf=gl.createBuffer();
-  gl.bindBuffer(gl.ARRAY_BUFFER,buf);
-  gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([
-    -1,-1,  1,-1, -1, 1,
-    -1, 1,  1,-1,  1, 1
-  ]),gl.STATIC_DRAW);
-  const loc=gl.getAttribLocation(P,"p");
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+    -1, -1,  1, -1, -1, 1,
+    -1, 1,  1, -1,  1, 1
+  ]), gl.STATIC_DRAW);
+  const loc = gl.getAttribLocation(P, "p");
   gl.enableVertexAttribArray(loc);
-  gl.vertexAttribPointer(loc,2,gl.FLOAT,false,0,0);
+  gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
 
-  const ur=gl.getUniformLocation(P,"r");
-  const ut=gl.getUniformLocation(P,"t");
+  const ur = gl.getUniformLocation(P, "r");
+  const ut = gl.getUniformLocation(P, "t");
 
-  function resize(){
-    const d=Math.min(2,devicePixelRatio||1);
-    const vw=visualViewport?visualViewport.width:innerWidth;
-    const vh=visualViewport?visualViewport.height:innerHeight;
-    c.width=Math.max(1,Math.floor(vw*d));
-    c.height=Math.max(1,Math.floor(vh*d));
-    gl.viewport(0,0,c.width,c.height);
-    gl.uniform2f(ur,c.width,c.height);
+  function resize() {
+    const d = Math.min(2, devicePixelRatio || 1);
+    const vw = visualViewport ? visualViewport.width : innerWidth;
+    const vh = visualViewport ? visualViewport.height : innerHeight;
+    c.width = Math.max(1, Math.floor(vw * d));
+    c.height = Math.max(1, Math.floor(vh * d));
+    gl.viewport(0, 0, c.width, c.height);
+    gl.uniform2f(ur, c.width, c.height);
   }
-  addEventListener("resize",resize,{passive:true});
-  visualViewport && visualViewport.addEventListener("resize",resize,{passive:true});
+
+  addEventListener("resize", resize, { passive: true });
+  visualViewport && visualViewport.addEventListener("resize", resize, { passive: true });
   resize();
 
-  let t0=performance.now(), paused=false;
-  document.addEventListener("visibilitychange",()=>paused=document.hidden,{passive:true});
+  let t0 = performance.now(), paused = false;
+  document.addEventListener("visibilitychange", () => paused = document.hidden, { passive: true });
 
-  (function loop(now){
-    if(!paused){
-      gl.uniform1f(ut,(now-t0)/1000);
-      gl.drawArrays(gl.TRIANGLES,0,6);
+  (function loop(now) {
+    if (!paused) {
+      gl.uniform1f(ut, (now - t0) / 1000);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
     }
     requestAnimationFrame(loop);
   })(t0);
