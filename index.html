@@ -1,6 +1,6 @@
 <!doctype html><html lang="zh"><meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
-<title>Cool Realtime Background</title>
+<title>Warm Realtime Background</title>
 <style>
   html,body{margin:0;height:100%;background:#000;overflow:hidden}
   canvas{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none}
@@ -10,52 +10,111 @@
 <script>
 (()=>{const c=document.getElementById("c"),gl=c.getContext("webgl",{antialias:false,alpha:false});
 if(!gl){const g=c.getContext("2d");g.fillStyle="#fff";g.font="16px system-ui";g.fillText("WebGL not supported",20,30);return;}
+
 const V=`attribute vec2 p;void main(){gl_Position=vec4(p,0.,1.);}`;
+
+// 温暖、干净：颜色只随低频变化；高频只影响亮度，避免“末日黄绿泥”
 const F=`precision highp float;
 uniform vec2 r;uniform float t;uniform int mood;
 #define TAU 6.28318530718
+
 float hash(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453123);}
-float n2(vec2 p){vec2 i=floor(p),f=fract(p);f=f*f*(3.-2.*f);
+float n2(vec2 p){
+  vec2 i=floor(p),f=fract(p); f=f*f*(3.-2.*f);
   float a=hash(i),b=hash(i+vec2(1,0)),c=hash(i+vec2(0,1)),d=hash(i+vec2(1,1));
   return mix(mix(a,b,f.x),mix(c,d,f.x),f.y);
 }
 float fbm(vec2 p){
-  float v=0.,a=.55;mat2 M=mat2(1.6,1.2,-1.2,1.6);
-  for(int i=0;i<5;i++){v+=a*n2(p);p=M*p+0.07*t;a*=.55;}
+  float v=0.,a=.55; mat2 M=mat2(1.6,1.2,-1.2,1.6);
+  for(int i=0;i<5;i++){ v+=a*n2(p); p=M*p+0.07*t; a*=.55; }
   return v;
 }
-vec3 pal(float x){
-  if(mood==0) return .55+.45*cos(TAU*(vec3(0.10,0.35,0.65)+x));
-  if(mood==1) return .55+.45*cos(TAU*(vec3(0.00,0.15,0.35)+x*1.1));
-  if(mood==2) return .55+.45*cos(TAU*(vec3(0.55,0.25,0.05)+x*0.9));
-  return .55+.45*cos(TAU*(vec3(0.20,0.55,0.85)+x*1.2));
+
+vec3 palWarm(float x,int m){
+  // x ~ [0,1]
+  vec3 dark,mid,hi,accent;
+  if(m==0){ // amber → peach (warm, clean)
+    dark=vec3(0.06,0.05,0.07);
+    mid =vec3(0.42,0.20,0.12);
+    hi  =vec3(0.98,0.72,0.45);
+    accent=vec3(1.00,0.90,0.75);
+  }else if(m==1){ // rose gold
+    dark=vec3(0.06,0.05,0.07);
+    mid =vec3(0.35,0.14,0.22);
+    hi  =vec3(0.95,0.55,0.62);
+    accent=vec3(1.00,0.86,0.90);
+  }else if(m==2){ // sunset (warm but not muddy)
+    dark=vec3(0.05,0.06,0.08);
+    mid =vec3(0.28,0.22,0.40);
+    hi  =vec3(0.98,0.62,0.32);
+    accent=vec3(1.00,0.82,0.60);
+  }else{ // warm neutral + gold highlight
+    dark=vec3(0.05,0.06,0.07);
+    mid =vec3(0.22,0.20,0.18);
+    hi  =vec3(0.92,0.78,0.52);
+    accent=vec3(1.00,0.92,0.78);
+  }
+  vec3 col = mix(dark, mid, smoothstep(0.10,0.55,x));
+  col = mix(col,  hi, smoothstep(0.45,0.90,x));
+  col = mix(col, accent, 0.18*smoothstep(0.75,0.98,x));
+  return col;
 }
+
 void main(){
   vec2 uv=(gl_FragCoord.xy-.5*r)/min(r.x,r.y);
   vec2 p=uv;
-  float f=fbm(p*2.2 + vec2(0.0,0.18*t));
-  float g=fbm(p*5.2 - vec2(0.12*t,0.0));
-  float flow = f*0.75 + g*0.35;
-  float ring = smoothstep(0.58,0.02,abs(sin((flow+t*0.22)*3.0)));
-  float glow = pow(max(0.0,1.0-0.88*length(uv)),2.0);
-  vec3 col = pal(flow + 0.07*sin(t+uv.x*1.8));
-  col *= 0.62 + 0.9*ring;
-  col += 0.85*glow*pal(flow+0.18);
-  col = pow(col, vec3(0.92));
+
+  // 低频：决定色相（干净）
+  float lf = fbm(p*1.20 + vec2(0.0, 0.09*t));
+  lf = smoothstep(0.08, 0.95, lf);
+
+  // 高频：只做亮度纹理（不改色相）
+  float hf = fbm(p*6.2 - vec2(0.18*t, 0.0));
+  float light = 0.78 + 0.28*hf;
+
+  // 柔和的“流光”而不是刺眼的环
+  float shimmer = smoothstep(0.62, 0.02, abs(sin((lf + t*0.16)*3.0)));
+  float vign = pow(max(0.0, 1.0-0.90*length(uv)), 2.3);
+
+  vec3 col = palWarm(lf, mood);
+  col *= light;
+  col *= 0.70 + 0.65*shimmer;
+  col += 0.70*vign*palWarm(clamp(lf+0.10,0.0,1.0), mood);
+
+  // 轻微去饱和 + 收敛对比：更“高级”、更适合当背景
+  float l = dot(col, vec3(0.2126,0.7152,0.0722));
+  col = mix(vec3(l), col, 0.86);
+
+  col = clamp(col, 0.0, 1.0);
+  col = pow(col, vec3(0.95));
   gl_FragColor=vec4(col,1.0);
 }`;
-function sh(type,src){const s=gl.createShader(type);gl.shaderSource(s,src);gl.compileShader(s);
-  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))throw gl.getShaderInfoLog(s);return s;}
-const prog=gl.createProgram();gl.attachShader(prog,sh(gl.VERTEX_SHADER,V));gl.attachShader(prog,sh(gl.FRAGMENT_SHADER,F));
-gl.linkProgram(prog);if(!gl.getProgramParameter(prog,gl.LINK_STATUS))throw gl.getProgramInfoLog(prog);
+
+function sh(type,src){
+  const s=gl.createShader(type); gl.shaderSource(s,src); gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)) throw gl.getShaderInfoLog(s);
+  return s;
+}
+const prog=gl.createProgram();
+gl.attachShader(prog,sh(gl.VERTEX_SHADER,V));
+gl.attachShader(prog,sh(gl.FRAGMENT_SHADER,F));
+gl.linkProgram(prog);
+if(!gl.getProgramParameter(prog,gl.LINK_STATUS)) throw gl.getProgramInfoLog(prog);
 gl.useProgram(prog);
-const buf=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,buf);
+
+// fullscreen quad
+const buf=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,buf);
 gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]),gl.STATIC_DRAW);
-const loc=gl.getAttribLocation(prog,"p");gl.enableVertexAttribArray(loc);gl.vertexAttribPointer(loc,2,gl.FLOAT,false,0,0);
-const ur=gl.getUniformLocation(prog,"r"),ut=gl.getUniformLocation(prog,"t"),uMood=gl.getUniformLocation(prog,"mood");
+const loc=gl.getAttribLocation(prog,"p"); gl.enableVertexAttribArray(loc);
+gl.vertexAttribPointer(loc,2,gl.FLOAT,false,0,0);
+
+const ur=gl.getUniformLocation(prog,"r");
+const ut=gl.getUniformLocation(prog,"t");
+const uMood=gl.getUniformLocation(prog,"mood");
+
 let mood=0,dp=1,paused=false;
 
-// iOS/Safari 适配：用 visualViewport + 限制 DPR + 处理后台暂停
+// iOS Safari 适配：visualViewport + 限制 DPR + 处理后台暂停
 function resize(){
   const vw=visualViewport?visualViewport.width:innerWidth;
   const vh=visualViewport?visualViewport.height:innerHeight;
@@ -69,19 +128,19 @@ addEventListener("resize",resize,{passive:true});
 visualViewport && visualViewport.addEventListener("resize",resize,{passive:true});
 resize();
 
-function setPaused(x){paused=x;}
-document.addEventListener("visibilitychange",()=>setPaused(document.hidden),{passive:true});
+document.addEventListener("visibilitychange",()=>{paused=document.hidden;},{passive:true});
 
+// tap/click 切换 mood（手机友好）
+function nextMood(){mood=(mood+1)%4; gl.uniform1i(uMood,mood);}
 gl.uniform1i(uMood,mood);
-function tap(){mood=(mood+1)%4;gl.uniform1i(uMood,mood);}
-addEventListener("touchstart",e=>{e.preventDefault();tap();},{passive:false});
-addEventListener("click",tap,{passive:true});
+addEventListener("touchstart",e=>{e.preventDefault(); nextMood();},{passive:false});
+addEventListener("click",nextMood,{passive:true});
 
+// render loop
 let t0=performance.now();
 (function loop(now){
   if(!paused){
-    const tt=(now-t0)/1000;
-    gl.uniform1f(ut,tt);
+    gl.uniform1f(ut,(now-t0)/1000);
     gl.drawArrays(gl.TRIANGLES,0,6);
   }
   requestAnimationFrame(loop);
