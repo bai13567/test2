@@ -1,6 +1,6 @@
 <!doctype html><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>Warm Healing — Seamless Clouds (iOS)</title>
+<title>Warm Healing — Evolving Field</title>
 <style>
 html,body{margin:0;height:100%;overflow:hidden;background:#0b0605;font:12px ui-monospace,Menlo,Consolas,monospace}
 canvas{position:fixed;inset:0;display:block}
@@ -17,8 +17,8 @@ backdrop-filter:blur(12px);box-shadow:0 0 0 1px #fff1 inset}
 background:#2a0000cc;border:1px solid #ff6a6a55;color:#ffd1d1;border-radius:12px;padding:10px 12px;white-space:pre-wrap}
 </style>
 
-<canvas id="bg"></canvas>
-<canvas id="fx"></canvas>
+<canvas id="c"></canvas>
+<canvas id="g"></canvas>
 
 <div id="ui">
   <div id="pill"><b>WARM HEALING</b> · <span id="s">loading…</span></div>
@@ -28,37 +28,36 @@ background:#2a0000cc;border:1px solid #ff6a6a55;color:#ffd1d1;border-radius:12px
 
 <script>
 (()=>{"use strict";
-const bg=document.getElementById("bg"), fx=document.getElementById("fx");
-const B=bg.getContext("2d",{alpha:false}), F=fx.getContext("2d",{alpha:true});
+const C=document.getElementById("c"), G=document.getElementById("g");
+const ctx=C.getContext("2d",{alpha:false}), gtx=G.getContext("2d",{alpha:true});
 const S=document.getElementById("s"), BTN=document.getElementById("btn"), ERR=document.getElementById("err");
 const mobile=matchMedia("(pointer:coarse)").matches||innerWidth<760;
 const clamp=(x,a,b)=>x<a?a:x>b?b:x, lerp=(a,b,t)=>a+(b-a)*t;
 
-function showErr(e){ ERR.style.display="block"; ERR.textContent=String(e && (e.stack||e.message) || e); }
+function showErr(e){ERR.style.display="block";ERR.textContent=String(e&&(e.stack||e.message)||e);}
 
 try{
-// ---------- Size / DPR ----------
+// ---------- size / DPR ----------
 let W=0,H=0,DPR=1;
 function resize(){
   DPR=clamp(devicePixelRatio||1,1,2);
   W=innerWidth; H=innerHeight;
-  for(const c of [bg,fx]){
+  for(const c of [C,G]){
     c.width=Math.max(2,Math.floor(W*DPR));
     c.height=Math.max(2,Math.floor(H*DPR));
     c.style.width=W+"px"; c.style.height=H+"px";
   }
-  B.setTransform(DPR,0,0,DPR,0,0);
-  F.setTransform(DPR,0,0,DPR,0,0);
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  gtx.setTransform(DPR,0,0,DPR,0,0);
 }
 addEventListener("resize",resize,{passive:true}); resize();
 
 // ---------- RNG ----------
-function makeRng(seed){ let s=seed>>>0; return ()=>((s=(s*1664525+1013904223)>>>0)&0xfffffff)/0xfffffff; }
+function makeRng(seed){let s=seed>>>0;return ()=>((s=(s*1664525+1013904223)>>>0)&0xfffffff)/0xfffffff;}
 
-// ---------- Color ----------
+// ---------- color helpers ----------
 function hex2rgb(h){h=h.replace("#","");const n=parseInt(h,16);return[(n>>16)&255,(n>>8)&255,n&255];}
-function rgb2hex(r,g,b){r=clamp(r|0,0,255);g=clamp(g|0,0,255);b=clamp(b|0,0,255);return"#"+((1<<24)+(r<<16)+(g<<8)+b).toString(16).slice(1);}
-function mixHex(a,b,t){const A=hex2rgb(a),B=hex2rgb(b);return rgb2hex(lerp(A[0],B[0],t),lerp(A[1],B[1],t),lerp(A[2],B[2],t));}
+function mix3(a,b,t){return [lerp(a[0],b[0],t),lerp(a[1],b[1],t),lerp(a[2],b[2],t)];}
 function rgb2hsv(r,g,b){
   r/=255;g/=255;b/=255;
   const mx=Math.max(r,g,b), mn=Math.min(r,g,b), d=mx-mn;
@@ -68,379 +67,316 @@ function rgb2hsv(r,g,b){
   return [h,s,v];
 }
 
-// ---------- Warm palettes ----------
+// ---------- palettes (warm healing, avoid purple/magenta) ----------
 const PALS=[
-  ["#FFF6EE","#FFE2C2","#E5A877","#FFF9F4"],
-  ["#FFF4EA","#FFDAB3","#E6A27A","#FFF8F2"],
-  ["#FFF7EF","#FFE3C0","#DFA373","#FFF9F3"],
+  ["#FFF7F0","#FFE5C9","#E8B07C","#FFF9F4"],
+  ["#FFF5EC","#FFDDB8","#E6A77A","#FFF9F3"],
   ["#FFF3E6","#FFD6A8","#E2A06D","#FFF8F1"],
-  ["#FFF6F0","#FFE0BA","#E3A16F","#FFF9F4"],
-];
+  ["#FFF6EE","#FFE2C2","#E5A877","#FFF9F4"],
+  ["#FFF4EA","#FFDAB3","#E6A27A","#FFF8F2"]
+].map(p=>p.map(hex2rgb));
 
-// ---------- Noise for cloud texture ----------
+// ---------- fast value noise (2D) ----------
 function hash2(ix,iy,seed){
   let x=(ix*374761393+iy*668265263)^(seed*1442695041);
   x=(x^(x>>>13))*1274126177;
   return ((x^(x>>>16))>>>0)/4294967295;
 }
-function noise2(x,y,seed){
-  const ix=Math.floor(x), iy=Math.floor(y);
+function vnoise2(x,y,seed){
+  const ix=x|0, iy=y|0;
   const fx=x-ix, fy=y-iy;
   const a=hash2(ix,iy,seed), b=hash2(ix+1,iy,seed), c=hash2(ix,iy+1,seed), d=hash2(ix+1,iy+1,seed);
   const ux=fx*fx*(3-2*fx), uy=fy*fy*(3-2*fy);
-  return (a*(1-ux)+b*ux)*(1-uy)+(c*(1-ux)+d*ux)*uy;
+  const ab=a+(b-a)*ux, cd=c+(d-c)*ux;
+  return ab+(cd-ab)*uy;
 }
-function fbm2(x,y,seed){
-  let f=0, amp=0.5, freq=1;
-  for(let i=0;i<5;i++){ f+=amp*noise2(x*freq,y*freq,seed+i*101); freq*=2; amp*=0.5; }
+function fbm(x,y,seed){
+  // 3 octaves for speed; looks natural once domain-warped
+  let f=0, amp=0.55, freq=1;
+  f += amp*vnoise2(x*freq,y*freq,seed); freq*=2; amp*=0.5;
+  f += amp*vnoise2(x*freq,y*freq,seed+101); freq*=2; amp*=0.5;
+  f += amp*vnoise2(x*freq,y*freq,seed+202);
   return f;
 }
 
-// ---------- Seamless cloud texture (mirror stitch) ----------
-let cloudTex=null;
-function buildSeamlessCloudTex(){
-  const seed=1337, N=256;              // base
-  const base=document.createElement("canvas"); base.width=base.height=N;
-  const c0=base.getContext("2d",{alpha:false});
-  const img=c0.createImageData(N,N), d=img.data;
-  for(let y=0;y<N;y++)for(let x=0;x<N;x++){
-    const nx=x/N, ny=y/N;
-    const v=fbm2(nx*2.2, ny*2.2, seed);
-    const t=clamp((v-0.45)/0.30,0,1);
-    const s=t*t*(3-2*t);
-    const g=(s*255)|0;
-    const i=(y*N+x)*4;
-    d[i]=g; d[i+1]=g; d[i+2]=g; d[i+3]=255;
+// ---------- low-res field renderer (architecture: evolving density field) ----------
+const off=document.createElement("canvas");
+const octx=off.getContext("2d",{alpha:false, willReadFrequently:true});
+let OW=0,OH=0, img=null, data=null;
+
+// adaptive resolution (keeps iOS smooth)
+let q= mobile ? 0.38 : 0.42; // quality factor
+function allocOff(){
+  // clamp to keep cost stable
+  OW=Math.max(160, Math.min(480, (W*q)|0));
+  OH=Math.max(260, Math.min(840, (H*q)|0));
+  off.width=OW; off.height=OH;
+  img=octx.createImageData(OW,OH);
+  data=img.data;
+}
+allocOff();
+
+function smoothstep(a,b,x){x=clamp((x-a)/(b-a),0,1);return x*x*(3-2*x);}
+
+// ---------- “scene” parameters + scoring (avoid ugly / avoid sameness) ----------
+let seedBase=123456789;
+const HISTORY=[], HIST_MAX=8;
+function sim(a,b){
+  let dot=0,na=0,nb=0;
+  for(let i=0;i<a.length;i++){dot+=a[i]*b[i];na+=a[i]*a[i];nb+=b[i]*b[i];}
+  return dot/Math.sqrt((na*nb)+1e-9);
+}
+
+function makeScene(seed){
+  const rnd=makeRng(seed);
+  const pal=PALS[(rnd()*PALS.length)|0];
+  // key: domain warp (flow) + time into noise (evolution), not translation
+  const warp=0.35+0.65*rnd();      // warp strength
+  const flow=0.06+0.12*rnd();      // flow speed (slow)
+  const scale=1.15+1.85*rnd();     // feature size
+  const detail=0.70+0.55*rnd();    // cloud contrast
+  const softness=0.55+0.35*rnd();  // cloud edge softness
+  const glow=0.12+0.20*rnd();      // warm lift in highlights
+  const vign=0.06+0.12*rnd();
+  const grain=0.05+0.03*rnd();
+  // feature vector for diversity
+  const feat=[warp,flow,scale,detail,softness,glow,vign,grain,(pal[1][0]/255)];
+  return {seed,pal,warp,flow,scale,detail,softness,glow,vign,grain,feat,score:0};
+}
+
+// quick preview scoring on small sample points (fast, no extra canvas)
+function scoreScene(sc){
+  // compute a few probes in normalized space at a few times; score warmth, avoid purple, avoid muddy/dark
+  const probes=[[0.2,0.2],[0.5,0.35],[0.75,0.55],[0.35,0.8],[0.8,0.85]];
+  const times=[0.9,2.4,3.9];
+  let total=0;
+  for(const tt of times){
+    let warm=0,pur=0,dark=0,lum=0,sat=0;
+    for(const p of probes){
+      const x=p[0], y=p[1];
+      // emulate same field math used in render (coarse)
+      const X=x*sc.scale*2.2, Y=y*sc.scale*2.2;
+      const t=tt*sc.flow;
+
+      // flow field (vector) from low freq noise; time enters noise => evolving
+      const fx = fbm(X*0.55 + 12.3, Y*0.55 + 4.7, sc.seed+11);
+      const fy = fbm(X*0.55 + 8.1 + t*1.2, Y*0.55 + 15.9, sc.seed+23);
+      const ang = 6.28318*fx;
+      const wx = Math.cos(ang)*sc.warp*0.55 + (fy-0.5)*sc.warp*0.6;
+      const wy = Math.sin(ang)*sc.warp*0.55 + (fx-0.5)*sc.warp*0.6;
+
+      // density field with domain warp; time enters noise as offset
+      const d = fbm(X+wx + t*0.7, Y+wy + t*0.9, sc.seed+101);
+      const m = smoothstep(0.42, 0.78, d);                 // cloud mass
+      const edge = Math.pow(m, 1.2+0.9*sc.softness);        // soften
+      // base gradient
+      const top=sc.pal[0], mid=sc.pal[1], low=sc.pal[2], glow=sc.pal[3];
+      const gy=clamp(y,0,1);
+      let base = gy<0.65 ? mix3(top,mid,gy/0.65) : mix3(mid,low,(gy-0.65)/0.35);
+
+      // cloud lighting: lift towards warm glow, avoid harsh whites
+      const lift = edge*sc.detail;
+      base = mix3(base, glow, lift*sc.glow);
+      // mild highlight
+      base = mix3(base, [255,255,255], lift*0.06);
+
+      const r=base[0]|0,g=base[1]|0,b=base[2]|0;
+      const [hh,ss,vv]=rgb2hsv(r,g,b);
+      lum += vv; sat += ss;
+      if((hh>=0 && hh<=70/360) || (hh>=0.98)) warm++;
+      if(hh>=255/360 && hh<=330/360) pur++;
+      if(vv<0.14) dark++;
+    }
+    const n=probes.length;
+    const warmP=warm/n, purP=pur/n, darkP=dark/n, lumM=lum/n, satM=sat/n;
+    // score: bright warm + moderate sat; punish purple/dark
+    let s = 100*(0.45*clamp((warmP-0.6)/0.4,0,1) + 0.40*Math.exp(-Math.pow((lumM-0.62)/0.18,2)) + 0.15*Math.exp(-Math.pow((satM-0.42)/0.20,2)))
+            - 100*(0.65*clamp((purP-0.02)/0.08,0,1) + 0.35*clamp((darkP-0.10)/0.25,0,1));
+    total += clamp(s,0,100);
   }
-  c0.putImageData(img,0,0);
+  let score=total/times.length;
 
-  // mirror to 512x512 => edges are continuous, no grid seams
-  const M=512;
-  const out=document.createElement("canvas"); out.width=out.height=M;
-  const c=out.getContext("2d",{alpha:false});
-  c.imageSmoothingEnabled=true;
-
-  // TL
-  c.drawImage(base,0,0,N,N,0,0,N,N);
-  // TR mirrored X
-  c.save(); c.translate(M,0); c.scale(-1,1); c.drawImage(base,0,0,N,N,0,0,N,N); c.restore();
-  // BL mirrored Y
-  c.save(); c.translate(0,M); c.scale(1,-1); c.drawImage(base,0,0,N,N,0,0,N,N); c.restore();
-  // BR mirrored XY
-  c.save(); c.translate(M,M); c.scale(-1,-1); c.drawImage(base,0,0,N,N,0,0,N,N); c.restore();
-
-  cloudTex=out;
-}
-buildSeamlessCloudTex();
-
-// pattern cache per context (B ctx & preview ctx must not share)
-const cloudPatternCache=new WeakMap();
-function getCloudPat(ctx){
-  if(!cloudTex) return null;
-  let p=cloudPatternCache.get(ctx);
-  if(p) return p;
-  try{
-    p=ctx.createPattern(cloudTex,"repeat");
-    if(!p) return null;
-    cloudPatternCache.set(ctx,p);
-    return p;
-  }catch(e){ return null; }
+  // diversity penalty if too similar to recent
+  if(HISTORY.length){
+    let mx=0; for(const f of HISTORY) mx=Math.max(mx, sim(sc.feat,f));
+    score -= 18*clamp((mx-0.92)/0.08,0,1);
+  }
+  sc.score=clamp(score,0,100);
+  return sc.score;
 }
 
-// ---------- Grain (dither to kill iOS banding) ----------
-let grainTex=null, grainPat=null;
+function pickScene(){
+  let best=null, bestS=-1;
+  for(let i=0;i<18;i++){
+    seedBase=(seedBase*1664525+1013904223)>>>0;
+    const sc=makeScene(seedBase);
+    const s=scoreScene(sc);
+    if(s>bestS){bestS=s; best=sc;}
+    if(s>=82) break;
+  }
+  return best;
+}
+
+let scene=pickScene();
+HISTORY.unshift(scene.feat.slice()); if(HISTORY.length>HIST_MAX) HISTORY.pop();
+
+// ---------- Grain overlay ----------
+let grainCanvas=document.createElement("canvas"), grainCtx=grainCanvas.getContext("2d",{alpha:true});
+let grainPat=null;
 function buildGrain(seed){
-  const N=256;
-  const c=document.createElement("canvas"); c.width=c.height=N;
-  const ctx=c.getContext("2d",{alpha:true});
-  const img=ctx.createImageData(N,N), d=img.data;
+  const N=256; grainCanvas.width=grainCanvas.height=N;
+  const img=grainCtx.createImageData(N,N), d=img.data;
   let s=seed>>>0;
   const rnd=()=>((s=(s*1664525+1013904223)>>>0)&0xfffffff)/0xfffffff;
   for(let i=0;i<d.length;i+=4){
     const r=rnd();
     const v=(r<0.5? r*r : 1-(1-r)*(1-r));
-    const n=(v-0.5);
-    const a=clamp(12 + Math.abs(n)*34, 10, 50);
+    const n=v-0.5;
+    const a=clamp(10 + Math.abs(n)*34, 8, 46);
     d[i]=255; d[i+1]=255; d[i+2]=255; d[i+3]=a;
   }
-  ctx.putImageData(img,0,0);
-  grainTex=c; grainPat=null;
+  grainCtx.putImageData(img,0,0);
+  grainPat=null;
 }
-function drawGrain(time,amount){
-  if(!grainTex) return;
-  if(!grainPat) grainPat=F.createPattern(grainTex,"repeat");
-  F.clearRect(0,0,W,H);
-  F.globalAlpha=amount*(0.92+0.08*Math.sin(time*2.0));
-  const ox=(Math.sin(time*0.9)*3)|0, oy=(Math.cos(time*1.1)*3)|0;
-  F.save(); F.translate(ox,oy);
-  F.fillStyle=grainPat;
-  F.fillRect(-10,-10,W+20,H+20);
-  F.restore();
-  F.globalAlpha=1;
-}
+buildGrain(scene.seed ^ 0x9E3779B9);
 
-// ---------- Candidate ----------
-function genCandidate(seed){
-  const rnd=makeRng(seed);
-  const base=PALS[(rnd()*PALS.length)|0];
-
-  // clouds: stronger but still background-safe
-  const cloudA=0.10+0.16*rnd();
-  const cloudS=0.55+1.20*rnd();
-  const cloudV=0.004+0.012*rnd();
-
-  // a tiny shimmer (optional, low)
-  const rippleA=0.015+0.040*rnd();
-  const rippleV=0.10+0.20*rnd();
-
-  const warmth=0.06+0.10*rnd();
-  const vign=0.06+0.12*rnd();
-  const grain=0.055+0.025*rnd();
-
-  const feat=[cloudA,cloudS,rippleA,rippleV,warmth,vign,grain];
-  return {seed,base,cloudA,cloudS,cloudV,rippleA,rippleV,warmth,vign,grain,feat,score:0};
+function drawGrain(t){
+  if(!grainPat) grainPat=gtx.createPattern(grainCanvas,"repeat");
+  gtx.clearRect(0,0,W,H);
+  gtx.globalAlpha=scene.grain*(0.92+0.08*Math.sin(t*2.1));
+  const ox=(Math.sin(t*0.9)*3)|0, oy=(Math.cos(t*1.1)*3)|0;
+  gtx.save(); gtx.translate(ox,oy);
+  gtx.fillStyle=grainPat;
+  gtx.fillRect(-10,-10,W+20,H+20);
+  gtx.restore();
+  gtx.globalAlpha=1;
 }
 
-// ---------- Render ----------
-function render(ctx,w,h,c,t){
-  const [top,mid,low,glow]=c.base;
-  const breathe=0.5+0.5*Math.sin(t*0.16);
-  const drift  =0.5+0.5*Math.sin(t*0.07+1.7);
+// ---------- core render: evolving density field + flow warp ----------
+function renderField(t){
+  const top=scene.pal[0], mid=scene.pal[1], low=scene.pal[2], glow=scene.pal[3];
+  const seed=scene.seed;
 
-  const top2=mixHex(top, glow, c.warmth*(0.55+0.45*breathe));
-  const mid2=mixHex(mid, glow, c.warmth*(0.35+0.65*drift));
-  const low2=mixHex(low, glow, c.warmth*(0.25+0.55*breathe));
+  // precompute for speed
+  const invW=1/OW, invH=1/OH;
+  const tt=t*scene.flow;
 
-  const sky=ctx.createLinearGradient(0,0,0,h);
-  sky.addColorStop(0, top2);
-  sky.addColorStop(0.65, mid2);
-  sky.addColorStop(1, low2);
-  ctx.fillStyle=sky; ctx.fillRect(0,0,w,h);
+  let p=0;
+  for(let y=0;y<OH;y++){
+    const ny=y*invH;
+    // vertical base gradient blend factors
+    const gy=ny;
+    const baseA = gy<0.65 ? gy/0.65 : 1;
+    const baseB = gy<0.65 ? 0 : (gy-0.65)/0.35;
 
-  const pat=getCloudPat(ctx);
-  if(pat){
-    // TWO cloud layers (different angle/scale/speed) => destroys tiling rhythm
-    ctx.save();
-    ctx.globalCompositeOperation="soft-light";
+    for(let x=0;x<OW;x++){
+      const nx=x*invW;
 
-    const drawLayer=(alpha,scaleMul,ang,spdMul)=>{
-      ctx.globalAlpha=alpha;
+      // normalized coords in “field space”
+      let X = (nx-0.5)*scene.scale*2.6;
+      let Y = (ny-0.5)*scene.scale*2.6;
 
-      const sx=(1/(c.cloudS*scaleMul))*w/512;
-      const sy=(1/(c.cloudS*scaleMul))*h/512;
+      // flow field (vector): time enters noise => shape evolves, not translates
+      const n1 = fbm(X*0.55 + 12.3 + tt*0.35, Y*0.55 + 4.7, seed+11);
+      const n2 = fbm(X*0.55 + 8.1, Y*0.55 + 15.9 + tt*0.45, seed+23);
+      const ang = 6.28318*n1;
+      const wx = (Math.cos(ang)*0.60 + (n2-0.5)*0.95) * scene.warp;
+      const wy = (Math.sin(ang)*0.60 + (n1-0.5)*0.95) * scene.warp;
 
-      const dx=(Math.sin(t*c.cloudV*6.0*spdMul)*0.08 + Math.sin(t*0.02))*w;
-      const dy=(Math.cos(t*c.cloudV*5.0*spdMul)*0.07 + Math.cos(t*0.018))*h;
+      // density (domain-warped fbm) with time offsets
+      const d = fbm(X + wx + tt*0.7, Y + wy + tt*0.9, seed+101);
+      const m = smoothstep(0.42, 0.78, d);
+      const edge = Math.pow(m, 1.2+0.9*scene.softness);
+      const lift = edge*scene.detail;
 
-      ctx.save();
-      ctx.translate(w*0.5+dx, h*0.5+dy);
-      ctx.rotate(ang);
-      ctx.scale(sx,sy);
-      ctx.fillStyle=pat;
-      // big rect in pattern space
-      ctx.fillRect(-2048,-2048,4096,4096);
-      ctx.restore();
-    };
+      // base color from vertical gradient
+      let base;
+      if(gy<0.65) base=mix3(top,mid,baseA);
+      else base=mix3(mid,low,baseB);
 
-    // layer1: soft body
-    drawLayer(0.55*(0.6+0.4*c.cloudA), 1.00, 0.18, 1.0);
-    // layer2: slower, larger, different angle
-    drawLayer(0.35*(0.6+0.4*c.cloudA), 0.62, -0.27, 0.55);
+      // lighting: warm glow lift + tiny white bloom (keeps “治愈”，不脏)
+      base = mix3(base, glow, lift*scene.glow);
+      base = mix3(base, [255,255,255], lift*0.05);
 
-    ctx.restore();
-  }
+      // subtle atmospheric scattering variation (non-directional)
+      const haze = fbm(X*0.35 + 30.7, Y*0.35 + 9.2 + tt*0.18, seed+303);
+      base = mix3(base, [255,248,240], (haze-0.5)*0.08 + 0.04);
 
-  // light well (depth hierarchy)
-  ctx.globalCompositeOperation="soft-light";
-  const cx=w*0.35, cy=h*0.25, rr=Math.max(w,h)*0.90;
-  const halo=ctx.createRadialGradient(cx,cy,0,cx,cy,rr);
-  halo.addColorStop(0,`rgba(255,255,255,${0.10+0.08*breathe})`);
-  halo.addColorStop(0.7,`rgba(255,246,235,${0.06+0.05*drift})`);
-  halo.addColorStop(1,"rgba(255,255,255,0)");
-  ctx.fillStyle=halo; ctx.fillRect(0,0,w,h);
+      // vignette (very light, to avoid “脏角”)
+      const dx=nx-0.5, dy=ny-0.55;
+      const vv = clamp(1 - (dx*dx*1.6 + dy*dy*1.8), 0, 1);
+      const vfac = 1 - scene.vign*(1-vv);
 
-  // subtle shimmer (keep tiny, avoid “贴纸闪”)
-  ctx.globalCompositeOperation="overlay";
-  ctx.globalAlpha=0.16;
-  for(let i=0;i<3;i++){
-    const p=i/3;
-    const ph=t*c.rippleV + p*2.3;
-    const a=c.rippleA*(0.45+0.55*(0.5+0.5*Math.sin(ph)));
-    const xoff=(Math.sin(ph*0.9)*0.08)*w;
-    const y0=(p*h)+(Math.cos(ph)*0.05)*h;
-    const grad=ctx.createLinearGradient(xoff,y0,xoff+w*0.9,y0+h*0.25);
-    grad.addColorStop(0,"rgba(255,255,255,0)");
-    grad.addColorStop(0.45,`rgba(255,255,255,${a})`);
-    grad.addColorStop(1,"rgba(255,255,255,0)");
-    ctx.fillStyle=grad;
-    ctx.fillRect(0,y0-h*0.15,w,h*0.45);
-  }
-  ctx.globalAlpha=1;
+      let r=(base[0]*vfac)|0, g=(base[1]*vfac)|0, b=(base[2]*vfac)|0;
 
-  // vignette (very light)
-  ctx.globalCompositeOperation="multiply";
-  const v=ctx.createRadialGradient(w*0.5,h*0.55,Math.min(w,h)*0.30,w*0.5,h*0.55,Math.max(w,h)*0.95);
-  v.addColorStop(0,"rgba(0,0,0,0)");
-  v.addColorStop(1,`rgba(0,0,0,${c.vign*(0.85+0.15*breathe)})`);
-  ctx.fillStyle=v; ctx.fillRect(0,0,w,h);
-
-  ctx.globalCompositeOperation="source-over";
-}
-
-// ---------- Scoring preview ----------
-const PREVIEW=72;
-const pre=document.createElement("canvas"); pre.width=pre.height=PREVIEW;
-const P=pre.getContext("2d",{alpha:false});
-
-function analyze(img){
-  const d=img.data, n=img.width*img.height;
-  let warm=0,purple=0,dark=0,hot=0,muddy=0,satSum=0,lumSum=0,lum2=0;
-  const lum=(r,g,b)=>0.2126*r+0.7152*g+0.0722*b;
-  for(let y=0;y<img.height;y++)for(let x=0;x<img.width;x++){
-    const i=(y*img.width+x)*4;
-    const r=d[i], g=d[i+1], b=d[i+2];
-    const L=lum(r/255,g/255,b/255);
-    lumSum+=L; lum2+=L*L;
-    const [h,s,v]=rgb2hsv(r,g,b); satSum+=s;
-
-    if((h>=0 && h<=70/360) || (h>=0.98 && h<=1)) warm++;
-    if(h>=255/360 && h<=330/360) purple++;
-    if(L<0.10) dark++;
-    if(L>0.92 && s>0.55) hot++;
-
-    if(s>0.12 && s<0.45 && L>0.30 && L<0.78){
-      const rg=Math.abs(r-g)/255, rb=Math.abs(r-b)/255, gb=Math.abs(g-b)/255;
-      if(rg<0.06 && rb<0.06 && gb<0.06) muddy++;
+      data[p++]=r; data[p++]=g; data[p++]=b; data[p++]=255;
     }
   }
-  const warmP=warm/n, purpleP=purple/n, darkP=dark/n, hotP=hot/n, muddyP=muddy/n;
-  const lumMean=lumSum/n, lumStd=Math.sqrt(Math.max(0, lum2/n - lumMean*lumMean));
-  const satMean=satSum/n;
-  return {warmP,purpleP,darkP,hotP,muddyP,lumMean,lumStd,satMean};
+
+  octx.putImageData(img,0,0);
+
+  // upscale to screen (smooth)
+  ctx.save();
+  ctx.imageSmoothingEnabled=true;
+  ctx.clearRect(0,0,W,H);
+  ctx.drawImage(off,0,0,OW,OH,0,0,W,H);
+  ctx.restore();
 }
 
-const HISTORY=[], HIST_MAX=10;
-function similarity(a,b){
-  let dot=0,na=0,nb=0;
-  for(let i=0;i<a.length;i++){ dot+=a[i]*b[i]; na+=a[i]*a[i]; nb+=b[i]*b[i]; }
-  return dot/Math.sqrt((na*nb)+1e-9);
-}
-
-function scoreCandidate(c){
-  const times=[0.8,2.2,3.7];
-  let sum=0, best=0;
-  for(const tt of times){
-    render(P,PREVIEW,PREVIEW,c,tt);
-    const a=analyze(P.getImageData(0,0,PREVIEW,PREVIEW));
-
-    const sWarm=100*clamp((a.warmP-0.62)/0.26,0,1);
-    const sLum =100*Math.exp(-Math.pow((a.lumMean-0.60)/0.14,2));
-    const sCon =100*Math.exp(-Math.pow((a.lumStd-0.16)/0.08,2));
-    const sSat =100*Math.exp(-Math.pow((a.satMean-0.42)/0.16,2));
-
-    const pMud =100*clamp((a.muddyP-0.05)/0.14,0,1);
-    const pPur =100*clamp((a.purpleP-0.006)/0.03,0,1);
-    const pDark=100*clamp((a.darkP-0.06)/0.18,0,1);
-    const pHot =100*clamp((a.hotP-0.03)/0.10,0,1);
-
-    let s = 0.26*sWarm + 0.30*sLum + 0.14*sCon + 0.10*sSat
-           -0.20*pMud - 0.22*pPur - 0.06*pDark - 0.06*pHot;
-    s=clamp(s,0,100);
-    sum+=s; if(s>best) best=s;
-  }
-  let score=(sum/times.length)*0.70 + best*0.30;
-
-  if(HISTORY.length){
-    let simMax=0;
-    for(const f of HISTORY) simMax=Math.max(simMax, similarity(c.feat,f));
-    score -= 18*clamp((simMax-0.92)/0.08,0,1);
-  }
-
-  c.score=clamp(score,0,100);
-  return c.score;
-}
-
-// ---------- Selection ----------
-let seedBase=123456789, current=null, next=null;
-
-function findHigh(maxTry=16, threshold=80){
-  let best=null, bestS=-1;
-  for(let i=0;i<maxTry;i++){
-    seedBase=(seedBase*1664525+1013904223)>>>0;
-    const c=genCandidate(seedBase);
-    const s=scoreCandidate(c);
-    if(s>bestS){bestS=s; best=c;}
-    if(s>=threshold) return c;
-  }
-  return best;
-}
-
-function apply(c){
-  current=c;
-  buildGrain(c.seed ^ 0x9E3779B9);
-  grainPat=null;
-  HISTORY.unshift(c.feat.slice()); if(HISTORY.length>HIST_MAX) HISTORY.pop();
-}
-
+// ---------- switching / auto ----------
+let next=null;
 function scheduleNext(){
+  next=null;
   let tries=0, best=null, bestS=-1;
   const step=()=>{
-    for(let k=0;k<2;k++){
+    // chunked to avoid jank
+    for(let k=0;k<3;k++){
       tries++;
       seedBase=(seedBase*1664525+1013904223)>>>0;
-      const c=genCandidate(seedBase);
-      const s=scoreCandidate(c);
-      if(s>bestS){bestS=s; best=c;}
-      if(s>=82 || tries>=22){ next=best; return; }
+      const sc=makeScene(seedBase);
+      const s=scoreScene(sc);
+      if(s>bestS){bestS=s; best=sc;}
+      if(s>=84 || tries>=24){ next=best; return; }
     }
     setTimeout(step,0);
   };
-  next=null; step();
+  step();
 }
-
-// ---------- Switch / auto ----------
-let auto=null;
+function applyScene(sc){
+  scene=sc;
+  HISTORY.unshift(scene.feat.slice()); if(HISTORY.length>HIST_MAX) HISTORY.pop();
+  buildGrain(scene.seed ^ 0x9E3779B9);
+}
 function switchNow(){
-  if(next){ apply(next); next=null; scheduleNext(); }
-  else { apply(findHigh(12,80)); scheduleNext(); }
-  clearInterval(auto); auto=setInterval(()=>switchNow(),60*1000);
+  if(next){ applyScene(next); next=null; scheduleNext(); }
+  else { applyScene(pickScene()); scheduleNext(); }
+  clearInterval(auto); auto=setInterval(switchNow,60*1000);
 }
 BTN.addEventListener("click",switchNow);
-auto=setInterval(()=>switchNow(),60*1000);
-
-// ---------- Main loop ----------
-let last=performance.now(), t=0, ema=60, scale=1;
-apply(findHigh(16,80));
+let auto=setInterval(switchNow,60*1000);
 scheduleNext();
 
-function draw(now){
-  requestAnimationFrame(draw);
+// ---------- main loop + adaptive quality ----------
+let t=0, last=performance.now(), ema=60;
+function tick(now){
+  requestAnimationFrame(tick);
   const dt=now-last; last=now;
   const fps=1000/(dt||16.7); ema=ema*0.92+fps*0.08;
   t += dt*0.001;
 
+  // adaptive resolution to keep smooth
   const target=mobile?60:90;
-  if(ema<target*0.92) scale=clamp(scale*0.985,0.84,1);
-  if(ema>target*1.03) scale=clamp(scale*1.003,0.84,1);
+  if(ema<target*0.92) { q=clamp(q*0.985, mobile?0.30:0.32, 0.50); allocOff(); }
+  if(ema>target*1.05) { q=clamp(q*1.004, mobile?0.30:0.32, 0.50); allocOff(); }
 
-  const wantW=Math.floor(W*DPR*scale), wantH=Math.floor(H*DPR*scale);
-  if(Math.abs(bg.width-wantW)>3 || Math.abs(bg.height-wantH)>3){
-    for(const c of [bg,fx]){ c.width=wantW; c.height=wantH; }
-  }
-  const sx=bg.width/W, sy=bg.height/H;
-  B.setTransform(sx,0,0,sy,0,0);
-  F.setTransform(sx,0,0,sy,0,0);
-
-  render(B,W,H,current,t);
-  drawGrain(t,current.grain);
+  renderField(t);
+  drawGrain(t);
 
   if(((now/500)|0)%2===0){
-    const sc=current.score?.toFixed(0) ?? "--";
-    const nx=next?.score!=null?next.score.toFixed(0):"…";
-    S.textContent=`score ${sc} · next ${nx} · fps~${ema.toFixed(0)}`;
+    S.textContent=`score ${scene.score.toFixed(0)} · next ${next?next.score.toFixed(0):"…"} · fps~${ema.toFixed(0)} · q ${q.toFixed(2)}`;
   }
 }
-requestAnimationFrame(draw);
+requestAnimationFrame(tick);
 
 }catch(e){showErr(e);}
 })();
