@@ -45,14 +45,18 @@
     return;
   }
 
-  // Check if WebGL is working by testing basic drawing functionality
+  // Test WebGL capabilities
+  const glVersion = gl.getParameter(gl.VERSION);
+  console.log("WebGL Version: ", glVersion);
+  
+  // Check if WebGL extension is supported
   if (!gl.getExtension("OES_standard_derivatives")) {
     showErrorMessage("WebGL error: OES_standard_derivatives extension is not available.");
     return;
   }
 
-  // Display the error message in case of issues
   function showErrorMessage(message) {
+    console.error(message); // Log to the browser console as well
     errorMessageElement.innerText = message;
     errorMessageElement.style.display = 'block';
   }
