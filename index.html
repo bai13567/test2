@@ -13,6 +13,8 @@ text-shadow:0 0 18px #ffbf6a55,0 0 30px #ff7aa822;white-space:nowrap;overflow:hi
 #btn{pointer-events:auto;padding:10px 14px;border-radius:14px;border:1px solid #fff2;background:#0006;color:#fff;
 backdrop-filter:blur(12px);box-shadow:0 0 0 1px #fff1 inset}
 #btn:active{transform:translateY(1px)}
+#err{position:fixed;left:12px;right:12px;bottom:12px;z-index:99;display:none;
+background:#2a0000cc;border:1px solid #ff6a6a55;color:#ffd1d1;border-radius:12px;padding:10px 12px;white-space:pre-wrap}
 </style>
 
 <canvas id="bg"></canvas>
@@ -22,15 +24,23 @@ backdrop-filter:blur(12px);box-shadow:0 0 0 1px #fff1 inset}
   <div id="pill"><b>WARM HEALING</b> · <span id="s">loading…</span></div>
   <button id="btn">切换</button>
 </div>
+<div id="err"></div>
 
 <script>
 (()=>{"use strict";
 const bg=document.getElementById("bg"), fx=document.getElementById("fx");
 const B=bg.getContext("2d",{alpha:false}), F=fx.getContext("2d",{alpha:true});
-const S=document.getElementById("s"), BTN=document.getElementById("btn");
+const S=document.getElementById("s"), BTN=document.getElementById("btn"), ERR=document.getElementById("err");
 const mobile=matchMedia("(pointer:coarse)").matches||innerWidth<760;
 const clamp=(x,a,b)=>x<a?a:x>b?b:x, lerp=(a,b,t)=>a+(b-a)*t;
 
+function showErr(e){
+  ERR.style.display="block";
+  ERR.textContent=String(e && (e.stack||e.message) || e);
+}
+
+try{
+// ---------- Size / DPR ----------
 let W=0,H=0,DPR=1;
 function resize(){
   DPR=clamp(devicePixelRatio||1,1,2); // iOS更稳，且够细腻
@@ -62,7 +72,7 @@ function rgb2hsv(r,g,b){
   return [h,s,v];
 }
 
-// ---------- Palettes (warm healing, no magenta/purple) ----------
+// ---------- Palettes ----------
 const PALS=[
   ["#FFF6EE","#FFE2C2","#E5A877","#FFF9F4"],
   ["#FFF4EA","#FFDAB3","#E6A27A","#FFF8F2"],
@@ -71,7 +81,7 @@ const PALS=[
   ["#FFF6F0","#FFE0BA","#E3A16F","#FFF9F4"],
 ];
 
-// ---------- Cloud noise texture (precomputed, removes banding) ----------
+// ---------- Cloud noise texture ----------
 function hash2(ix,iy,seed){
   let x=(ix*374761393+iy*668265263)^(seed*1442695041);
   x=(x^(x>>>13))*1274126177;
@@ -89,21 +99,19 @@ function fbm2(x,y,seed){
   for(let i=0;i<5;i++){ f+=amp*noise2(x*freq,y*freq,seed+i*101); freq*=2; amp*=0.5; }
   return f;
 }
-let cloudTex=null, cloudPat=null, cloudSeed=1;
+
+let cloudTex=null, cloudPat=null;
 function buildCloudTex(seed){
-  cloudSeed=seed>>>0;
   const N=256;
   const c=document.createElement("canvas"); c.width=c.height=N;
   const ctx=c.getContext("2d",{alpha:false});
   const img=ctx.createImageData(N,N), d=img.data;
   for(let y=0;y<N;y++){
     for(let x=0;x<N;x++){
-      // fbm cloud: smooth, no stripes
       const nx=x/N, ny=y/N;
-      const v=fbm2(nx*2.2, ny*2.2, cloudSeed);
-      // contrast curve to get “cloud body”
+      const v=fbm2(nx*2.2, ny*2.2, seed);
       const t=clamp((v-0.45)/0.30,0,1);
-      const c2=t*t*(3-2*t); // smoothstep
+      const c2=t*t*(3-2*t);
       const g=(c2*255)|0;
       const i=(y*N+x)*4;
       d[i]=g; d[i+1]=g; d[i+2]=g; d[i+3]=255;
@@ -117,21 +125,19 @@ function getCloudPat(){
   return cloudPat;
 }
 
-// ---------- Grain / dithering (stronger to kill iOS banding, still subtle) ----------
-let grainTex=null, grainPat=null, grainSeed=1;
+// ---------- Grain (dithering) ----------
+let grainTex=null, grainPat=null;
 function buildGrain(seed){
-  grainSeed=seed>>>0;
   const N=256;
   const c=document.createElement("canvas"); c.width=c.height=N;
   const ctx=c.getContext("2d",{alpha:true});
   const img=ctx.createImageData(N,N), d=img.data;
-  let s=grainSeed;
+  let s=seed>>>0;
   const rnd=()=>((s=(s*1664525+1013904223)>>>0)&0xfffffff)/0xfffffff;
   for(let i=0;i<d.length;i+=4){
     const r=rnd();
-    const v=(r<0.5? r*r : 1-(1-r)*(1-r)); // fewer extremes
+    const v=(r<0.5? r*r : 1-(1-r)*(1-r));
     const n=(v-0.5);
-    // luma-only dithering (no color noise)
     const a=clamp(12 + Math.abs(n)*36, 10, 52);
     d[i]=255; d[i+1]=255; d[i+2]=255; d[i+3]=a;
   }
@@ -154,19 +160,16 @@ function drawGrain(time,amount){
 function genCandidate(seed){
   const rnd=makeRng(seed);
   const base=PALS[(rnd()*PALS.length)|0];
-
-  // dynamics (stronger than before but still “background-safe”)
-  const cloudA=0.10+0.16*rnd();         // cloud contrast strength
-  const cloudS=0.75+1.35*rnd();         // cloud scale
-  const cloudV=0.006+0.015*rnd();       // cloud time speed (slow)
-  const rippleA=0.02+0.05*rnd();        // water-caustics very subtle
-  const rippleS=0.8+1.8*rnd();
+  const cloudA=0.10+0.16*rnd();
+  const cloudS=0.75+1.35*rnd();
+  const cloudV=0.006+0.015*rnd();
+  const rippleA=0.02+0.05*rnd();
   const rippleV=0.12+0.22*rnd();
-  const warmth=0.06+0.10*rnd();         // warm lift
-  const vign=0.06+0.12*rnd();           // very light vignette
-  const grain=0.050+0.030*rnd();        // stronger to fight banding
-  const feat=[cloudA,cloudS,rippleA,rippleS,warmth,vign,grain];
-  return {seed,base,cloudA,cloudS,cloudV,rippleA,rippleS,rippleV,warmth,vign,grain,feat,score:0,breakdown:null};
+  const warmth=0.06+0.10*rnd();
+  const vign=0.06+0.12*rnd();
+  const grain=0.050+0.030*rnd();
+  const feat=[cloudA,cloudS,rippleA,rippleV,warmth,vign,grain];
+  return {seed,base,cloudA,cloudS,cloudV,rippleA,rippleV,warmth,vign,grain,feat,score:0};
 }
 
 // ---------- Render ----------
@@ -175,39 +178,31 @@ function render(ctx,w,h,c,t){
   const breathe=0.5+0.5*Math.sin(t*0.16);
   const drift  =0.5+0.5*Math.sin(t*0.07+1.7);
 
-  // warm lift prevents “muddy gray”
   const top2=mixHex(top, glow, c.warmth*(0.55+0.45*breathe));
   const mid2=mixHex(mid, glow, c.warmth*(0.35+0.65*drift));
   const low2=mixHex(low, glow, c.warmth*(0.25+0.55*breathe));
 
-  // base gradient (very smooth)
   const sky=ctx.createLinearGradient(0,0,0,h);
   sky.addColorStop(0, top2);
   sky.addColorStop(0.65, mid2);
   sky.addColorStop(1, low2);
   ctx.fillStyle=sky; ctx.fillRect(0,0,w,h);
 
-  // cloud texture layer: pattern moved slowly (no stripes, natural)
+  // cloud texture
   ctx.save();
   ctx.globalCompositeOperation="soft-light";
-  ctx.globalAlpha=0.65;
+  ctx.globalAlpha=0.70;
   const pat=getCloudPat();
-
-  // transform pattern for scale + drift
-  // We draw a big rect with translated pattern to simulate moving cloud mass.
-  const sx = (1/(c.cloudS))*w/256;
-  const sy = (1/(c.cloudS))*h/256;
-  const dx = (Math.sin(t*c.cloudV*6.0)*0.06 + Math.sin(t*0.03))*w;
-  const dy = (Math.cos(t*c.cloudV*5.0)*0.05 + Math.cos(t*0.028))*h;
-
-  // paint pattern
+  const sx=(1/(c.cloudS))*w/256, sy=(1/(c.cloudS))*h/256;
+  const dx=(Math.sin(t*c.cloudV*6.0)*0.06 + Math.sin(t*0.03))*w;
+  const dy=(Math.cos(t*c.cloudV*5.0)*0.05 + Math.cos(t*0.028))*h;
   ctx.translate(dx,dy);
   ctx.scale(sx,sy);
   ctx.fillStyle=pat;
-  ctx.fillRect(-512,-512, (w/sx)+1024, (h/sy)+1024);
+  ctx.fillRect(-512,-512,(w/sx)+1024,(h/sy)+1024);
   ctx.restore();
 
-  // cloud contrast shaping: overlay a radial “light well” to give depth hierarchy
+  // light well
   ctx.globalCompositeOperation="soft-light";
   const cx=w*0.35, cy=h*0.25, rr=Math.max(w,h)*0.90;
   const halo=ctx.createRadialGradient(cx,cy,0,cx,cy,rr);
@@ -216,43 +211,43 @@ function render(ctx,w,h,c,t){
   halo.addColorStop(1,"rgba(255,255,255,0)");
   ctx.fillStyle=halo; ctx.fillRect(0,0,w,h);
 
-  // water-caustics hint: very subtle diagonal shimmer (no hard bands)
+  // subtle shimmer
   ctx.globalCompositeOperation="overlay";
   ctx.globalAlpha=0.20;
   for(let i=0;i<4;i++){
-    const p=(i/4);
+    const p=i/4;
     const ph=t*c.rippleV + p*2.3;
     const a=c.rippleA*(0.45+0.55*(0.5+0.5*Math.sin(ph)));
     const xoff=(Math.sin(ph*0.9)*0.08)*w;
-    const y0=(p*h) + (Math.cos(ph)*0.05)*h;
-    const grad=ctx.createLinearGradient(xoff,y0, xoff+w*0.9, y0+h*0.25);
-    grad.addColorStop(0,`rgba(255,255,255,0)`);
+    const y0=(p*h)+(Math.cos(ph)*0.05)*h;
+    const grad=ctx.createLinearGradient(xoff,y0,xoff+w*0.9,y0+h*0.25);
+    grad.addColorStop(0,"rgba(255,255,255,0)");
     grad.addColorStop(0.45,`rgba(255,255,255,${a})`);
-    grad.addColorStop(1,`rgba(255,255,255,0)`);
+    grad.addColorStop(1,"rgba(255,255,255,0)");
     ctx.fillStyle=grad;
     ctx.fillRect(0,y0-h*0.15,w,h*0.45);
   }
   ctx.globalAlpha=1;
 
-  // vignette (very light, avoids “dirt corners”)
+  // vignette
   ctx.globalCompositeOperation="multiply";
   const v=ctx.createRadialGradient(w*0.5,h*0.55,Math.min(w,h)*0.30,w*0.5,h*0.55,Math.max(w,h)*0.95);
-  const vv=c.vign*(0.85+0.15*breathe);
   v.addColorStop(0,"rgba(0,0,0,0)");
-  v.addColorStop(1,`rgba(0,0,0,${vv})`);
+  v.addColorStop(1,`rgba(0,0,0,${c.vign*(0.85+0.15*breathe)})`);
   ctx.fillStyle=v; ctx.fillRect(0,0,w,h);
 
   ctx.globalCompositeOperation="source-over";
 }
 
-// ---------- Scoring (multi-factor + anti-homogenization) ----------
-const PRE=72, pre=document.createElement("canvas"); pre.width=pre.height=PRE;
+// ---------- Scoring preview (single declaration, no duplicate consts) ----------
+const PREVIEW=72;
+const pre=document.createElement("canvas"); pre.width=pre.height=PREVIEW;
 const P=pre.getContext("2d",{alpha:false});
+
+// analysis
 function analyze(img){
   const d=img.data, n=img.width*img.height;
   let warm=0,purple=0,dark=0,hot=0,muddy=0,satSum=0,lumSum=0,lum2=0;
-  let grad=0, mid=0, hi=0;
-
   const lum=(r,g,b)=>0.2126*r+0.7152*g+0.0722*b;
 
   for(let y=0;y<img.height;y++)for(let x=0;x<img.width;x++){
@@ -271,33 +266,14 @@ function analyze(img){
       const rg=Math.abs(r-g)/255, rb=Math.abs(r-b)/255, gb=Math.abs(g-b)/255;
       if(rg<0.06 && rb<0.06 && gb<0.06) muddy++;
     }
-
-    if(x>0){
-      const j=i-4;
-      const L2=lum(d[j]/255,d[j+1]/255,d[j+2]/255);
-      const dl=Math.abs(L-L2); grad+=dl; if(dl>0.22) hi++;
-    }
-    if(y>0){
-      const j=i-img.width*4;
-      const L2=lum(d[j]/255,d[j+1]/255,d[j+2]/255);
-      const dl=Math.abs(L-L2); grad+=dl; if(dl>0.22) hi++;
-    }
-    if(x>2){
-      const j=i-8; const L2=lum(d[j]/255,d[j+1]/255,d[j+2]/255);
-      mid+=Math.abs(L-L2);
-    }
-    if(y>2){
-      const j=i-img.width*8; const L2=lum(d[j]/255,d[j+1]/255,d[j+2]/255);
-      mid+=Math.abs(L-L2);
-    }
   }
 
   const warmP=warm/n, purpleP=purple/n, darkP=dark/n, hotP=hot/n, muddyP=muddy/n;
   const lumMean=lumSum/n, lumStd=Math.sqrt(Math.max(0, lum2/n - lumMean*lumMean));
   const satMean=satSum/n;
-  const gradMean=grad/(n*2), midMean=mid/(n*2), hiP=hi/(n*2);
-  return {warmP,purpleP,darkP,hotP,muddyP,lumMean,lumStd,satMean,gradMean,midMean,hiP};
+  return {warmP,purpleP,darkP,hotP,muddyP,lumMean,lumStd,satMean};
 }
+
 const HISTORY=[], HIST_MAX=10;
 function similarity(a,b){
   let dot=0,na=0,nb=0;
@@ -306,35 +282,26 @@ function similarity(a,b){
 }
 function scoreCandidate(c){
   const times=[0.8,2.2,3.7];
-  let sum=0, best=0, breakdown=null;
-
+  let sum=0, best=0;
   for(const tt of times){
-    P.setTransform(1,0,0,1,0,0);
-    render(P,PRE,PRE,c,tt);
-    const a=analyze(P.getImageData(0,0,PRE,PRE));
+    render(P,PREVIEW,PREVIEW,c,tt);
+    const a=analyze(P.getImageData(0,0,PREVIEW,PREVIEW));
 
     const sWarm=100*clamp((a.warmP-0.62)/0.26,0,1);
     const sLum =100*Math.exp(-Math.pow((a.lumMean-0.60)/0.14,2));
     const sCon =100*Math.exp(-Math.pow((a.lumStd-0.16)/0.08,2));
     const sSat =100*Math.exp(-Math.pow((a.satMean-0.42)/0.16,2));
-    const sMid =100*clamp((a.midMean-0.030)/0.055,0,1);
 
     const pMud =100*clamp((a.muddyP-0.05)/0.14,0,1);
     const pPur =100*clamp((a.purpleP-0.006)/0.03,0,1);
     const pDark=100*clamp((a.darkP-0.06)/0.18,0,1);
     const pHot =100*clamp((a.hotP-0.03)/0.10,0,1);
-    const pHi  =100*clamp((a.hiP-0.012)/0.05,0,1);
 
-    // 目标：自然舒适（亮度/温暖优先），纹理只要“有空气感”，不需要夸张
-    let s =
-      0.22*sWarm + 0.22*sLum + 0.10*sCon + 0.10*sSat + 0.12*sMid
-      - 0.18*pMud - 0.18*pPur - 0.06*pDark - 0.05*pHot - 0.05*pHi;
-
+    let s = 0.26*sWarm + 0.30*sLum + 0.14*sCon + 0.10*sSat
+            -0.20*pMud - 0.22*pPur - 0.06*pDark - 0.06*pHot;
     s=clamp(s,0,100);
     sum+=s; if(s>best) best=s;
-    if(tt===2.2) breakdown={sWarm,sLum,sCon,sSat,sMid,pMud,pPur,pDark,pHot,pHi,raw:a};
   }
-
   let score=(sum/times.length)*0.70 + best*0.30;
 
   if(HISTORY.length){
@@ -344,13 +311,13 @@ function scoreCandidate(c){
   }
 
   c.score=clamp(score,0,100);
-  c.breakdown=breakdown;
   return c.score;
 }
 
-// ---------- Selection / scheduling ----------
+// ---------- Selection ----------
 let seedBase=123456789, current=null, next=null;
-function findHigh(maxTry=22, threshold=84){
+
+function findHigh(maxTry=18, threshold=82){
   let best=null, bestS=-1;
   for(let i=0;i<maxTry;i++){
     seedBase=(seedBase*1664525+1013904223)>>>0;
@@ -363,7 +330,6 @@ function findHigh(maxTry=22, threshold=84){
 }
 function apply(c){
   current=c;
-  // textures depend on seed -> variety without color chaos
   buildCloudTex(c.seed ^ 0xA53A1F3);
   buildGrain(c.seed ^ 0x9E3779B9);
   HISTORY.unshift(c.feat.slice()); if(HISTORY.length>HIST_MAX) HISTORY.pop();
@@ -371,30 +337,32 @@ function apply(c){
 function scheduleNext(){
   let tries=0, best=null, bestS=-1;
   const step=()=>{
-    const batch=2;
-    for(let k=0;k<batch;k++){
+    for(let k=0;k<2;k++){
       tries++;
       seedBase=(seedBase*1664525+1013904223)>>>0;
       const c=genCandidate(seedBase);
       const s=scoreCandidate(c);
       if(s>bestS){bestS=s; best=c;}
-      if(s>=86 || tries>=28){ next=best; return; }
+      if(s>=84 || tries>=24){ next=best; return; }
     }
     setTimeout(step,0);
   };
   next=null; step();
 }
+
+// ---------- Switch / auto ----------
+let auto=null;
 function switchNow(){
   if(next){ apply(next); next=null; scheduleNext(); }
-  else { apply(findHigh(18,84)); scheduleNext(); }
+  else { apply(findHigh(14,82)); scheduleNext(); }
   clearInterval(auto); auto=setInterval(()=>switchNow(),60*1000);
 }
 BTN.addEventListener("click",switchNow);
-let auto=setInterval(()=>switchNow(),60*1000);
+auto=setInterval(()=>switchNow(),60*1000);
 
 // ---------- Main loop ----------
 let last=performance.now(), t=0, ema=60, scale=1;
-apply(findHigh(22,84));
+apply(findHigh(18,82));
 scheduleNext();
 
 function draw(now){
@@ -404,8 +372,8 @@ function draw(now){
   t += dt*0.001;
 
   const target=mobile?60:90;
-  if(ema<target*0.92) scale=clamp(scale*0.985,0.82,1);
-  if(ema>target*1.03) scale=clamp(scale*1.003,0.82,1);
+  if(ema<target*0.92) scale=clamp(scale*0.985,0.84,1);
+  if(ema>target*1.03) scale=clamp(scale*1.003,0.84,1);
 
   const wantW=Math.floor(W*DPR*scale), wantH=Math.floor(H*DPR*scale);
   if(Math.abs(bg.width-wantW)>3 || Math.abs(bg.height-wantH)>3){
@@ -421,9 +389,11 @@ function draw(now){
   if(((now/500)|0)%2===0){
     const sc=current.score?.toFixed(0) ?? "--";
     const nx=next?.score!=null?next.score.toFixed(0):"…";
-    S.textContent=`score ${sc} · next ${nx} · fps~${ema.toFixed(0)} · clouds ${current.cloudA.toFixed(2)} · ripple ${current.rippleA.toFixed(2)}`;
+    S.textContent=`score ${sc} · next ${nx} · fps~${ema.toFixed(0)}`;
   }
 }
 requestAnimationFrame(draw);
+
+}catch(e){showErr(e);}
 })();
 </script>
