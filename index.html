@@ -1,6 +1,6 @@
 <!doctype html><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>AAA Random Shader</title>
+<title>AAA Curated Random Shader</title>
 <style>
 html,body{margin:0;height:100%;background:#05060a;overflow:hidden;font:12px ui-monospace,Menlo,Consolas,monospace}
 #c{position:fixed;inset:0;display:block}
@@ -16,13 +16,13 @@ box-shadow:0 0 0 1px #fff1 inset}
 border-radius:12px;padding:10px 12px;display:none;white-space:pre-wrap}
 body:before{content:"";position:fixed;inset:-60px;pointer-events:none;background:
 repeating-linear-gradient(0deg,rgba(255,255,255,.04),rgba(255,255,255,.04) 1px,transparent 2px,transparent 6px);
-mix-blend-mode:overlay;opacity:.18;animation:scan 10s linear infinite}
+mix-blend-mode:overlay;opacity:.16;animation:scan 10s linear infinite}
 @keyframes scan{to{transform:translateY(60px)}}
 </style>
 
 <canvas id="c"></canvas>
 <div id="ui">
-  <div id="pill"><b>AAA RANDOM BACKGROUND</b> · <span id="s">loading…</span></div>
+  <div id="pill"><b>AAA BACKGROUND</b> · <span id="s">loading…</span></div>
   <button id="btn">切换</button>
 </div>
 <div id="err"></div>
@@ -31,7 +31,7 @@ mix-blend-mode:overlay;opacity:.18;animation:scan 10s linear infinite}
 (()=>{"use strict";
 const canvas=document.getElementById("c"),S=document.getElementById("s"),BTN=document.getElementById("btn"),ERR=document.getElementById("err");
 const mobile=matchMedia("(pointer:coarse)").matches||innerWidth<760;
-const clamp=(x,a,b)=>x<a?a:x>b?b:x;
+const clamp=(x,a,b)=>x<a?a:x>b?b:x, lerp=(a,b,t)=>a+(b-a)*t;
 
 let gl=canvas.getContext("webgl",{alpha:false,antialias:false,depth:false,stencil:false,premultipliedAlpha:false,preserveDrawingBuffer:false})
      ||canvas.getContext("experimental-webgl");
@@ -39,18 +39,17 @@ if(!gl){ERR.style.display="block";ERR.textContent="WebGL unavailable in this bro
 
 const VSH=`attribute vec2 p;varying vec2 v;void main(){v=p*0.5+0.5;gl_Position=vec4(p,0.,1.);} `;
 const FSH=`precision highp float;varying vec2 v;
-uniform vec2 R;uniform float T;uniform vec4 A;uniform vec4 B;uniform vec4 C;uniform float Q;
+uniform vec2 R;uniform float T;uniform vec4 A;uniform vec4 B;uniform vec4 C;uniform vec4 P;uniform float Q;
 
-// --- util ---
+// hash / noise / fbm
 float hash(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453123);}
-float hash1(float x){return fract(sin(x*12345.6789)*43758.5453);}
 float noise(vec2 p){
   vec2 i=floor(p),f=fract(p);vec2 u=f*f*(3.0-2.0*f);
   float a=hash(i), b=hash(i+vec2(1,0)), c=hash(i+vec2(0,1)), d=hash(i+vec2(1,1));
   return mix(mix(a,b,u.x),mix(c,d,u.x),u.y);
 }
 float fbm(vec2 p){
-  float f=0.,a=.5;mat2 m=mat2(1.6,1.2,-1.2,1.6);
+  float f=0.,a=.5; mat2 m=mat2(1.6,1.2,-1.2,1.6);
   for(int i=0;i<6;i++){f+=a*noise(p);p=m*p;a*=.5;}
   return f;
 }
@@ -59,71 +58,74 @@ vec3 hsv2rgb(vec3 c){
   vec3 p=abs(fract(c.xxx+K.xyz)*6.-K.www);
   return c.z*mix(K.xxx,clamp(p-K.xxx,0.,1.),c.y);
 }
+// palette: P = (h1,h2,h3,modeFlag)  ; C.w is accent amount
+vec3 palette(float x){
+  float h1=P.x, h2=P.y, h3=P.z;
+  vec3 c1=hsv2rgb(vec3(h1, 0.92, 1.0));
+  vec3 c2=hsv2rgb(vec3(h2, 0.90, 1.0));
+  vec3 c3=hsv2rgb(vec3(h3, 0.88, 1.0));
+  vec3 col=mix(c1,c2,smoothstep(0.15,0.85,x));
+  col=mix(col,c3,smoothstep(0.25,0.95,pow(x,1.2))*0.65);
+  return col;
+}
 
-// --- "AAA feel" shader: domain warp + volumetric-ish bands + glow + grain + vignette ---
 void main(){
+  // screen uv
   vec2 uv=(gl_FragCoord.xy-0.5*R)/R.y;
 
-  // camera + subtle parallax
-  float t=T*(0.55+0.65*A.w);
-  vec2 cam=vec2(sin(t*0.07),cos(t*0.06))*0.15*(0.2+0.8*B.w);
+  // camera drift (kept subtle so it feels expensive, not noisy)
+  float t=T*(0.55+0.70*A.w);
+  vec2 cam=vec2(sin(t*0.07),cos(t*0.06))*0.14*(0.25+0.75*B.w);
   uv += cam;
 
-  // domain warp
+  // domain warp (two-stage)
   vec2 p=uv;
-  float w1=fbm(p* (1.2+2.8*A.x) + vec2(t*0.10, -t*0.08));
-  float w2=fbm(p* (2.0+3.4*A.y) + vec2(-t*0.06, t*0.11));
-  p += vec2(w1-w2, w2-w1) * (0.22+0.55*A.z);
+  float w1=fbm(p*(1.0+2.4*A.x)+vec2(t*0.10,-t*0.08));
+  float w2=fbm(p*(1.8+3.0*A.y)+vec2(-t*0.06,t*0.11));
+  p += vec2(w1-w2,w2-w1)*(0.18+0.55*A.z);
 
-  // layered structures
   float r=length(p)+1e-4;
-  float a=atan(p.y,p.x);
+  float ang=atan(p.y,p.x);
 
-  float bands = sin((r*(8.0+14.0*B.x) - t*(1.4+1.6*B.y)) + (a*(3.0+6.0*B.z)));
-  float veins = fbm(p*(3.2+6.0*C.x) + vec2(t*0.12,-t*0.09));
-  float mist  = fbm(p*(1.2+3.4*C.y) - vec2(t*0.05,t*0.04));
-  float core  = exp(-r*(1.6+2.4*C.z));
+  // structures: bands + veins + mist
+  float bands = sin((r*(7.0+14.0*B.x)-t*(1.2+1.6*B.y)) + (ang*(2.6+6.5*B.z)));
+  float veins = fbm(p*(3.0+5.8*C.x) + vec2(t*0.12,-t*0.09));
+  float mist  = fbm(p*(1.2+3.2*C.y) - vec2(t*0.05,t*0.04));
+  float core  = exp(-r*(1.5+2.6*C.z));
 
-  float field = 0.55*veins + 0.35*mist + 0.25*(bands*0.5+0.5) + 0.45*core;
+  float field = 0.52*veins + 0.33*mist + 0.26*(bands*0.5+0.5) + 0.46*core;
+  field = clamp(field,0.0,1.0);
 
-  // palette (constrained randomness so it's "always pretty")
-  float hueBase = fract(0.58 + 0.35*A.x + 0.18*C.w);
-  float hue2    = fract(hueBase + 0.22 + 0.25*B.y);
-  float hue3    = fract(hueBase - 0.18 - 0.20*B.z);
+  // base color from curated palette
+  vec3 col = palette(field);
 
-  vec3 c1=hsv2rgb(vec3(hueBase, 0.95, 1.0));
-  vec3 c2=hsv2rgb(vec3(hue2,    0.90, 1.0));
-  vec3 c3=hsv2rgb(vec3(hue3,    0.85, 1.0));
+  // controlled accent: only highlights, never large dirty blocks
+  float accent = smoothstep(0.65,0.98,field) * (0.18+0.82*C.w);
+  vec3 acc = hsv2rgb(vec3(fract(P.y + 0.06), 0.70, 1.0)); // accent hue derived, kept clean
+  col = mix(col, col+acc*0.55, accent*0.55);
 
-  float m1=smoothstep(0.10,0.92,field);
-  float m2=smoothstep(0.05,0.85,veins);
-  vec3 col = mix(c1,c2,m1);
-  col = mix(col,c3,m2*0.55);
+  // glow: internal bloom-ish
+  float glow = pow(field, 2.2)*(0.30+0.95*B.w) + core*(0.55+0.75*A.w);
+  col += col*glow*(0.55+0.85*A.y);
 
-  // glow (fake bloom inside shader)
-  float glow = pow(clamp(field,0.,1.), 2.2) * (0.35+0.85*B.w) + core*(0.6+0.6*A.w);
-  col += col * glow * (0.55+0.8*A.y);
-
-  // contrast & filmic-ish curve
+  // filmic curve
   col = col/(1.0+col);
-  col = pow(col, vec3(0.92+0.18*C.y));
+  col = pow(col, vec3(0.92+0.16*C.y));
 
-  // vignette + subtle chroma split
-  vec2 q=uv*vec2(1.0,1.0);
-  float vig = smoothstep(1.25,0.25,length(q));
-  col *= (0.65+0.55*vig);
+  // vignette + gentle chroma split (quality feel)
+  float vig = smoothstep(1.20,0.22,length(uv));
+  col *= (0.70+0.50*vig);
 
-  // grain (temporal)
+  // grain: subtle, avoids dirty purple/pink by being luminance-only-ish
   float g = hash(gl_FragCoord.xy + vec2(T*60.0, T*37.0));
-  col += (g-0.5) * (0.03+0.03*(1.0-vig)) * (0.4+0.6*C.x);
+  col += (g-0.5) * (0.018+0.018*(1.0-vig)) * (0.35+0.65*C.x);
 
-  // final quality knob (Q): if adaptive lowers res, slightly sharpen contrast
-  col = mix(col, col*1.06, clamp((1.0-Q)*1.2,0.,0.5));
+  // adaptive Q: if scaled down, tiny contrast compensation
+  col = mix(col, col*1.05, clamp((1.0-Q)*1.1,0.,0.5));
 
   gl_FragColor=vec4(col,1.0);
 }`;
 
-// compile helpers
 function compile(type,src){
   const s=gl.createShader(type); gl.shaderSource(s,src); gl.compileShader(s);
   if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)||"shader compile failed");
@@ -136,29 +138,82 @@ function build(){
     prog=gl.createProgram(); gl.attachShader(prog,vs); gl.attachShader(prog,fs); gl.linkProgram(prog);
     if(!gl.getProgramParameter(prog,gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog)||"program link failed");
     gl.useProgram(prog);
-    // quad
     const buf=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,buf);
     gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1, 1,-1, -1,1, 1,1]),gl.STATIC_DRAW);
     const pLoc=gl.getAttribLocation(prog,"p"); gl.enableVertexAttribArray(pLoc);
     gl.vertexAttribPointer(pLoc,2,gl.FLOAT,false,0,0);
-    // uniforms
-    loc.R=gl.getUniformLocation(prog,"R");
-    loc.T=gl.getUniformLocation(prog,"T");
-    loc.A=gl.getUniformLocation(prog,"A");
-    loc.B=gl.getUniformLocation(prog,"B");
-    loc.C=gl.getUniformLocation(prog,"C");
-    loc.Q=gl.getUniformLocation(prog,"Q");
+    ["R","T","A","B","C","P","Q"].forEach(k=>loc[k]=gl.getUniformLocation(prog,k));
     ERR.style.display="none";
-  }catch(e){
-    ERR.style.display="block"; ERR.textContent=String(e);
-  }
+  }catch(e){ERR.style.display="block";ERR.textContent=String(e);}
 }
 build();
 
-// adaptive rendering
-let W=0,H=0,dpr=1,scale=1; // scale is adaptive resolution multiplier
+// ===== Curated palettes (safe, cinematic). Hues in 0..1 =====
+// Each palette: [h1,h2,h3, familyFlag]
+// familyFlag 0 = warm family (avoid purple/dark pink), 1 = cool, 2 = neutral-cinematic
+const PALETTES=[
+  [0.08, 0.58, 0.12, 0], // amber + teal + warm highlight (cinematic teal/orange)
+  [0.06, 0.13, 0.55, 0], // sunset gold -> orange -> deep teal (warm, no purple)
+  [0.10, 0.16, 0.62, 2], // bronze -> peach -> ocean teal
+  [0.54, 0.60, 0.68, 1], // deep ocean -> cyan -> electric blue
+  [0.40, 0.48, 0.58, 1], // aurora green -> teal -> blue
+  [0.02, 0.10, 0.14, 0], // lava ember -> gold -> orange
+  [0.58, 0.62, 0.08, 2], // cyan/blue with warm spark accents (balanced)
+  // restrained purple family (kept clean, no dirty magenta): only one slot and always bright
+  [0.70, 0.56, 0.62, 1]
+];
+
+// RNG with bias
+const rnd=()=>Math.random();
+function pickPalette(){
+  // warm palettes slightly more likely (user偏好“整体好看”、暖色更安全)
+  const w=[3,3,3,2,2,3,2,1]; // weights per palette
+  let sum=w.reduce((a,b)=>a+b,0),r=rnd()*sum;
+  for(let i=0;i<w.length;i++){r-=w[i]; if(r<=0) return PALETTES[i];}
+  return PALETTES[0];
+}
+
+// uniforms arrays
+let A=[0,0,0,0],B=[0,0,0,0],C=[0,0,0,0],P=[0,0,0,0];
+
+// “随机但更好看”的核心：受控参数 + 受控调色板 + 禁止脏紫/暗粉大面积出现
+function newLook(){
+  const pal=pickPalette(); P=[pal[0],pal[1],pal[2],pal[3]];
+  const family=pal[3];
+
+  // Warp & motion (keep classy, not chaotic)
+  A=[rnd(),rnd(),rnd(), 0.55+0.45*rnd()];
+  A[2]=0.18+0.62*A[2];
+
+  // Structure
+  B=[0.22+0.70*rnd(), rnd(), rnd(), 0.55+0.45*rnd()];
+  B[2]=0.12+0.76*B[2];
+
+  // Texture + gamma + core + accentAmount
+  C=[0.25+0.75*rnd(), 0.20+0.70*rnd(), 0.20+0.75*rnd(), 0.18+0.60*rnd()];
+
+  // If warm family: clamp accent so it never goes “purple/dark pink dirty”
+  // (accent hue derived from P.y; warm palettes use P.y ~ teal/green, safe)
+  if(family===0){
+    C[3]=0.10+0.38*rnd();          // smaller accent range
+    B[1]=0.30+0.55*rnd();          // moderate band speed
+    A[1]=0.30+0.55*rnd();
+  }
+
+  // If purple-ish palette: force bright + less saturation “cheap purple” avoidance
+  if(P[0]>0.66 && P[0]<0.78){
+    C[3]=0.08+0.22*rnd();          // tiny accent only
+    A[2]=0.18+0.45*rnd();          // less warp to avoid muddy gradients
+    B[0]=0.25+0.45*rnd();
+  }
+}
+
+let auto=setInterval(()=>{newLook();t0=performance.now();},60*1000);
+BTN.onclick=()=>{newLook();t0=performance.now();};
+
+let W=0,H=0,dpr=1,scale=1;
 function resize(){
-  dpr=clamp(devicePixelRatio||1,1,mobile?2.0:2.6); // “3A感”允许更高 dpr，但自适应会控住
+  dpr=clamp(devicePixelRatio||1,1,mobile?2.0:2.6); // allow high, adapt will keep stable
   W=innerWidth; H=innerHeight;
   canvas.width=Math.floor(W*dpr*scale);
   canvas.height=Math.floor(H*dpr*scale);
@@ -167,47 +222,24 @@ function resize(){
 }
 addEventListener("resize",resize,{passive:true});
 
-// random-but-pretty parameter generator
-let A=[0,0,0,0],B=[0,0,0,0],C=[0,0,0,0];
-function rand(){ // deterministic-ish from Math.random is enough
-  return Math.random();
-}
-function newLook(){
-  // constrain ranges so random is still aesthetically safe
-  A=[rand(), rand(), rand(), 0.55+0.45*rand()];        // warp mix + speed
-  B=[0.15+0.85*rand(), rand(), rand(), 0.45+0.55*rand()]; // band freq + glow
-  C=[0.25+0.75*rand(), rand(), rand(), rand()];        // texture + gamma + palette shift
-  // avoid ugly extremes: pull toward “nice” midpoints
-  A[2]=0.15+0.70*A[2];
-  B[2]=0.10+0.80*B[2];
-  C[1]=0.20+0.75*C[1];
-}
-newLook();
+// adaptive target fps (prefer 90 if display allows; fallback 60)
+const maxHz = (screen && screen.refreshRate) ? screen.refreshRate : 90; // refreshRate often undefined; harmless
+const target = mobile ? 60 : 90; // iOS 手机上 90 很不稳，默认追 60；iPad/桌面追 90
+let t0=performance.now(),last=performance.now(),ema=target;
 
-// minute auto switch
-let auto=setInterval(()=>{newLook();t0=performance.now();},60*1000);
-
-// button: randomize + reset auto timer anchor
-BTN.onclick=()=>{
-  newLook(); t0=performance.now();
-};
-
-// render loop + target 90fps adaptive scale
-let t0=performance.now(),last=performance.now(),ema=90;
-resize();
+newLook(); resize();
 
 function tick(now){
   requestAnimationFrame(tick);
   const dt=now-last; last=now;
-  const fps=1000/(dt||11.1);
+  const fps=1000/(dt||16.7);
   ema=ema*0.92+fps*0.08;
 
-  // aim 90fps: if drops, reduce scale; if high, increase (slow)
-  const target=90;
-  if(ema<target*0.92) scale=clamp(scale*0.985, 0.72, 1.0);
-  if(ema>target*1.02) scale=clamp(scale*1.003, 0.72, 1.0);
+  // adaptive scale
+  if(ema<target*0.92) scale=clamp(scale*0.985, 0.78, 1.0);
+  if(ema>target*1.03) scale=clamp(scale*1.003, 0.78, 1.0);
 
-  // only resize when scale change accumulates (avoid thrash)
+  // resize occasionally
   if((now|0)%250<dt && Math.abs(canvas.width-(W*dpr*scale))>2) resize();
 
   gl.useProgram(prog);
@@ -216,12 +248,13 @@ function tick(now){
   gl.uniform4f(loc.A, A[0],A[1],A[2],A[3]);
   gl.uniform4f(loc.B, B[0],B[1],B[2],B[3]);
   gl.uniform4f(loc.C, C[0],C[1],C[2],C[3]);
+  gl.uniform4f(loc.P, P[0],P[1],P[2],P[3]);
   gl.uniform1f(loc.Q, scale);
   gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
 
-  // status
   if(((now/250)|0)%2===0){
-    S.textContent=`fps~${ema.toFixed(0)} · res=${canvas.width}×${canvas.height} · scale=${scale.toFixed(2)} · auto=60s`;
+    const fam = P[3]===0?"warm":"cool";
+    S.textContent=`${fam} · fps~${ema.toFixed(0)} · ${canvas.width}×${canvas.height} · scale=${scale.toFixed(2)} · auto=60s`;
   }
 }
 requestAnimationFrame(tick);
