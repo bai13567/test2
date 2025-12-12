@@ -2,7 +2,7 @@
 <html lang="zh">
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
-<title>White Clouds</title>
+<title>White Clouds (iOS Safari)</title>
 <style>
   html,body{margin:0;height:100%;overflow:hidden;background:#eef6ff}
   canvas{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none}
@@ -13,7 +13,12 @@
 (()=> {
   const c=document.getElementById("c");
   const gl=c.getContext("webgl",{antialias:false,alpha:false});
-  if(!gl) return;
+  if(!gl){
+    const g=c.getContext("2d"); if(!g) return;
+    g.fillStyle="#000"; g.font="16px system-ui";
+    g.fillText("WebGL not supported",20,30);
+    return;
+  }
 
   const V=`attribute vec2 p;void main(){gl_Position=vec4(p,0.,1.);}`;
   const F=`precision highp float;
@@ -32,50 +37,52 @@
   }
 
   void main(){
-    vec2 uv = (gl_FragCoord.xy / r);
-    vec2 p = (uv*2.0-1.0);
-    p.x *= r.x/r.y;
+    vec2 uv = gl_FragCoord.xy / r;
+    vec2 p = uv*2.0 - 1.0;
+    p.x *= r.x / r.y;
 
-    // 云的移动（非常慢、很“空气感”）
+    // 慢速漂移（更像真实云）
     float tt = t*0.035;
-    vec2 drift = vec2(tt*1.2, tt*0.7);
+    vec2 drift = vec2(tt*1.15, tt*0.75);
 
-    // 轻度域扭曲：让云更像团块而不是噪声纹理
-    vec2 q = p*1.15;
+    // 轻度域扭曲：云团感更强
+    vec2 q = p*1.10;
     float w1 = fbm(q + drift*1.2);
     float w2 = fbm(q*1.7 - drift*1.6);
-    q += 0.22*vec2(w1-0.5, w2-0.5);
+    q += 0.26*vec2(w1-0.5, w2-0.5);
 
-    // “云密度”——用低频为主，形成大朵白云
-    float d0 = fbm(q*0.95 + drift);
-    float d1 = fbm(q*2.2  - drift*1.3);
-    float dens = d0*0.78 + d1*0.22;
+    // 云密度：低频为主 + 少量细节
+    float d0 = fbm(q*0.90 + drift);
+    float d1 = fbm(q*2.10 - drift*1.2);
+    float dens = d0*0.80 + d1*0.20;
 
-    // 关键：用阈值把“亮的部分”切出来，云就会是白的团
-    float cloud = smoothstep(0.52, 0.78, dens);
+    // 关键：云用阈值“切出来”，并提升存在感
+    float cloud = smoothstep(0.47, 0.70, dens); // 更容易形成白云
+    cloud = pow(cloud, 1.15);                   // 云更“立体”
 
-    // 边缘更软、更像白云
-    float edge = fbm(q*3.6 + drift*0.8);
-    cloud *= smoothstep(0.25, 0.75, edge);
+    // edge 只做轻微扰动，避免把云抹掉
+    float edge = fbm(q*3.2 + drift*0.7);
+    cloud *= 0.90 + 0.10*edge;
 
-    // 云内部轻微明暗（但绝不变灰黑）
-    float shade = 0.92 + 0.08*fbm(q*4.8 - drift*2.0);
-    shade = clamp(shade, 0.90, 1.02);
+    // 云内部轻微明暗（不变灰）
+    float shade = 0.93 + 0.07*fbm(q*4.6 - drift*1.8);
+    shade = clamp(shade, 0.92, 1.02);
 
-    // 天空：浅蓝白渐变
-    vec3 skyTop = vec3(0.93, 0.97, 1.00);
-    vec3 skyBot = vec3(0.98, 0.98, 0.99);
+    // 天空：稍微压一点，避免 iOS 上“过曝看不见云”
+    vec3 skyTop = vec3(0.86, 0.93, 1.00);
+    vec3 skyBot = vec3(0.95, 0.97, 1.00);
     vec3 sky = mix(skyBot, skyTop, smoothstep(-1.0, 1.0, p.y));
 
-    // 白云色：偏暖一点点更“柔”
+    // 白云：偏暖一点点，更柔
     vec3 cloudCol = vec3(1.00, 0.995, 0.985) * shade;
 
-    // 让云更“蓬”：高光一点点
-    float silver = smoothstep(0.55, 0.95, fbm(q*2.8 + drift*0.6));
+    // 银边高光（轻微）
+    float silver = smoothstep(0.55, 0.95, fbm(q*2.6 + drift*0.6));
     cloudCol = mix(cloudCol, vec3(1.0), 0.10*silver);
 
-    // 合成（保证整体不出暗色）
-    vec3 col = mix(sky, cloudCol, cloud);
+    // 合成：增强云存在感
+    vec3 col = mix(sky, cloudCol, clamp(cloud*1.25, 0.0, 1.0));
+
     col = clamp(col, 0.0, 1.0);
     col = pow(col, vec3(0.98));
     gl_FragColor = vec4(col, 1.0);
@@ -85,17 +92,23 @@
     const s=gl.createShader(type);
     gl.shaderSource(s,src);
     gl.compileShader(s);
+    if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)) throw gl.getShaderInfoLog(s);
     return s;
   }
   const P=gl.createProgram();
   gl.attachShader(P,sh(gl.VERTEX_SHADER,V));
   gl.attachShader(P,sh(gl.FRAGMENT_SHADER,F));
   gl.linkProgram(P);
+  if(!gl.getProgramParameter(P,gl.LINK_STATUS)) throw gl.getProgramInfoLog(P);
   gl.useProgram(P);
 
+  // fullscreen quad
   const buf=gl.createBuffer();
   gl.bindBuffer(gl.ARRAY_BUFFER,buf);
-  gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]),gl.STATIC_DRAW);
+  gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([
+    -1,-1,  1,-1, -1, 1,
+    -1, 1,  1,-1,  1, 1
+  ]),gl.STATIC_DRAW);
   const loc=gl.getAttribLocation(P,"p");
   gl.enableVertexAttribArray(loc);
   gl.vertexAttribPointer(loc,2,gl.FLOAT,false,0,0);
