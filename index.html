@@ -1,6 +1,6 @@
 <!doctype html><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>Ambient Gradient Field · Snapshot vs Live (5s)</title>
+<title>Ambient Gradient Field · Stone Finish</title>
 <style>
 html,body{margin:0;height:100%;overflow:hidden;background:#050505}
 canvas{position:fixed;inset:0;display:block}
@@ -32,12 +32,6 @@ addEventListener("resize",resize,{passive:true});resize();
 
 // ===== 5秒一个“背景周期” =====
 const PERIOD = 5.0; // 秒
-// 本周期内动态幅度（调试用，方便看见）
-const DYN = {
-  move: 0.10,   // 中心漂移幅度
-  breathe: 0.020, // 明暗呼吸
-  warm: 0.035   // 色温微变
-};
 
 // ===== 确定性 RNG（每个周期生成一套基底）=====
 function rand(seed){return ()=>((seed=(seed*1664525+1013904223)>>>0)&0xfffffff)/0xfffffff;}
@@ -67,14 +61,14 @@ function stateAt(base, tau){
   const v = Math.cos(tau*0.77 + base.p2) + 0.6*Math.cos(tau*1.31 + base.p3) + 0.35*Math.cos(tau*1.91 + base.p1);
   const w = Math.sin(tau*0.62 + base.p3) + 0.5*Math.sin(tau*1.19 + base.p1);
 
-  const du = (u/2.1)*DYN.move;
-  const dv = (v/2.1)*DYN.move;
-  const br = 1 + (w/2.0)*DYN.breathe;
+  const du = (u/2.1)*0.1; // 控制中心漂移幅度
+  const dv = (v/2.1)*0.1;
+  const br = 1 + (w/2.0)*0.02; // 色温和光影呼吸
 
   return {
     gx: clamp(base.gx + du*0.55, 0.30, 0.70),
     gy: clamp(base.gy + dv*0.55, 0.30, 0.70),
-    warm: base.warm0 + (u/2.2)*DYN.warm,
+    warm: base.warm0 + (u/2.2)*0.04,
     deep: base.deep,
     air:  base.air,
     br
@@ -91,6 +85,16 @@ function drawField(state,x0,w){
   base.addColorStop(1, rgb(mix3(P.low,P.ink,state.deep)));
   ctx.fillStyle=base;
   ctx.fillRect(x0,0,w,H);
+
+  // 玉石质感：微微的表面波动和反射（增加质感）
+  ctx.save();
+  ctx.globalCompositeOperation="overlay";
+  const stoneGrain=ctx.createRadialGradient(gx, gy, 0, gx, gy, Math.max(W,H));
+  stoneGrain.addColorStop(0, "rgba(255,255,255,0.08)");
+  stoneGrain.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle=stoneGrain;
+  ctx.fillRect(x0,0,w,H);
+  ctx.restore();
 
   // air layer
   ctx.save();
