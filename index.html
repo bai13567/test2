@@ -1,6 +1,6 @@
 <!doctype html><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>Ambient Gradient Field · Prev vs Current</title>
+<title>Ambient Gradient Field · Snapshot vs Live (5s)</title>
 <style>
 html,body{margin:0;height:100%;overflow:hidden;background:#050505}
 canvas{position:fixed;inset:0;display:block}
@@ -10,7 +10,7 @@ background:rgba(0,0,0,.25);border:1px solid rgba(255,255,255,.15);
 border-radius:12px;padding:10px 12px;backdrop-filter:blur(10px)}
 </style>
 <canvas id="c"></canvas>
-<div id="hud">DEBUG · 左=上一个背景 · 右=当前背景（每 3 秒切换，平滑过渡）</div>
+<div id="hud">DEBUG · 左=本周期 t=0 固定快照 · 右=本周期实时变化 · 每 5 秒换一套</div>
 
 <script>
 (()=>{"use strict";
@@ -28,99 +28,115 @@ function resize(){
   C.style.width=W+"px"; C.style.height=H+"px";
   ctx.setTransform(DPR,0,0,DPR,0,0);
 }
-addEventListener("resize",resize,{passive:true}); resize();
+addEventListener("resize",resize,{passive:true});resize();
 
-// ===== 状态生成（确定性，便于复现）=====
+// ===== 5秒一个“背景周期” =====
+const PERIOD = 5.0; // 秒
+// 本周期内动态幅度（调试用，方便看见）
+const DYN = {
+  move: 0.10,   // 中心漂移幅度
+  breathe: 0.020, // 明暗呼吸
+  warm: 0.035   // 色温微变
+};
+
+// ===== 确定性 RNG（每个周期生成一套基底）=====
 function rand(seed){return ()=>((seed=(seed*1664525+1013904223)>>>0)&0xfffffff)/0xfffffff;}
-function makeState(seed){
+function makeBase(seed){
   const r=rand(seed>>>0);
-  // 只做“环境场”参数：位置/色温/亮度层级（无形状、无纹理）
   return {
-    gx:0.42+0.16*r(),   // radial center x
-    gy:0.44+0.16*r(),   // radial center y
-    warm:0.010+0.035*r(), // tiny warm lift
-    deep:0.050+0.020*r(), // dark mix at edges (cashmere-ish)
-    air: 0.10+0.08*r()    // vertical air layer
-  };
-}
-function lerpState(a,b,t){
-  return {
-    gx:lerp(a.gx,b.gx,t),
-    gy:lerp(a.gy,b.gy,t),
-    warm:lerp(a.warm,b.warm,t),
-    deep:lerp(a.deep,b.deep,t),
-    air: lerp(a.air, b.air, t)
+    gx:0.40+0.20*r(),
+    gy:0.40+0.20*r(),
+    warm0:0.010+0.030*r(),
+    deep:0.050+0.020*r(),
+    air: 0.10+0.08*r(),
+    // 让动态“非周期”一点：每套背景的相位不同
+    p1: r()*6.28318,
+    p2: r()*6.28318,
+    p3: r()*6.28318
   };
 }
 
-// ===== 固定暖中性调色盘（调试版先锁死）=====
+// 固定暖中性调色盘（调试版先锁死）
 const P={top:[252,248,242], mid:[238,224,204], low:[214,182,140], ink:[28,22,18]};
-
-// ===== 切换参数 =====
-const STEP=3.0;   // 每 3 秒换一次
-const FADE=0.7;   // 过渡时长（可调：0.5~1.0 都行）
-
-// ===== 三态：prev / cur / next =====
-let i=0;
-let prev=makeState(0);
-let cur =makeState(1);
-let next=makeState(2);
-let tSwitch=0;
-
-// ease for fade (更像“状态变化”，不像动画)
 const ease=x=>x*x*(3-2*x);
 
+// 给定：基底 base + 本周期内时间 tau（0..PERIOD），得到“实时状态参数”
+function stateAt(base, tau){
+  // 用互不相关的慢正弦叠加，避免“扫光/节奏感”
+  const u = Math.sin(tau*0.85 + base.p1) + 0.7*Math.sin(tau*1.21 + base.p2) + 0.4*Math.sin(tau*1.73 + base.p3);
+  const v = Math.cos(tau*0.77 + base.p2) + 0.6*Math.cos(tau*1.31 + base.p3) + 0.35*Math.cos(tau*1.91 + base.p1);
+  const w = Math.sin(tau*0.62 + base.p3) + 0.5*Math.sin(tau*1.19 + base.p1);
+
+  const du = (u/2.1)*DYN.move;
+  const dv = (v/2.1)*DYN.move;
+  const br = 1 + (w/2.0)*DYN.breathe;
+
+  return {
+    gx: clamp(base.gx + du*0.55, 0.30, 0.70),
+    gy: clamp(base.gy + dv*0.55, 0.30, 0.70),
+    warm: base.warm0 + (u/2.2)*DYN.warm,
+    deep: base.deep,
+    air:  base.air,
+    br
+  };
+}
+
 function drawField(state,x0,w){
-  // base radial field
   const gx=x0 + w*state.gx;
   const gy=H*state.gy;
-  const g=ctx.createRadialGradient(gx,gy, Math.min(w,H)*0.07, gx,gy, Math.max(w,H)*1.05);
-  g.addColorStop(0, rgb(mix3(P.top,[255,255,255],state.warm)));
-  g.addColorStop(0.48, rgb(P.mid));
-  g.addColorStop(1, rgb(mix3(P.low,P.ink,state.deep)));
-  ctx.fillStyle=g;
+  const base=ctx.createRadialGradient(gx,gy, Math.min(w,H)*0.07, gx,gy, Math.max(w,H)*1.05);
+
+  base.addColorStop(0, rgb(mix3(P.top,[255,255,255],state.warm)));
+  base.addColorStop(0.48, rgb(P.mid));
+  base.addColorStop(1, rgb(mix3(P.low,P.ink,state.deep)));
+  ctx.fillStyle=base;
   ctx.fillRect(x0,0,w,H);
 
-  // gentle vertical “air”
+  // air layer
   ctx.save();
   ctx.globalCompositeOperation="soft-light";
   const air=ctx.createLinearGradient(0,0,0,H);
-  air.addColorStop(0, `rgba(255,252,248,${0.12*state.air})`);
+  air.addColorStop(0, `rgba(255,252,248,${0.12*state.air*state.br})`);
   air.addColorStop(0.55,"rgba(255,255,255,0)");
-  air.addColorStop(1, `rgba(0,0,0,${0.06*state.air})`);
+  air.addColorStop(1, `rgba(0,0,0,${0.06*state.air*state.br})`);
   ctx.fillStyle=air;
   ctx.fillRect(x0,0,w,H);
   ctx.restore();
 }
 
-let t0=performance.now();
+// ===== 周期管理：每 5 秒生成一套 base，并冻结 snapshot =====
+let cycle=0;
+let base=makeBase(1);
+let snap=stateAt(base, 0); // t=0 固定快照
+let t0=performance.now();  // 全局时间
+let tCycleStart=t0;
+
 function tick(now){
   requestAnimationFrame(tick);
-  const t=(now-t0)*0.001;
-  const half=W*0.5;
 
-  // 状态更新：每 STEP 秒进入一次切换窗口
-  const local=t-tSwitch;
-  if(local>=STEP){
-    // 完成一次“当前”确定：prev <- cur, cur <- next, next <- 新生成
-    i++;
-    prev=cur;
-    cur=next;
-    next=makeState(i+2);
-    tSwitch=t;
+  // 检测是否进入新周期
+  const elapsed=(now-tCycleStart)*0.001;
+  if(elapsed>=PERIOD){
+    cycle++;
+    tCycleStart = now;
+    base = makeBase(1000 + cycle); // 换一套背景基底
+    snap = stateAt(base, 0);       // 新周期的 t=0 固定快照（左边）
   }
 
-  // 右边：如果在 FADE 时间内，就从 cur 过渡到 next；否则保持 cur
-  const k = clamp(local/FADE,0,1);
-  const sRight = (k<1) ? lerpState(cur,next,ease(k)) : cur;
+  const tau=(now-tCycleStart)*0.001;      // 本周期内时间
+  const live=stateAt(base, tau);          // 右边实时变化
 
-  // 绘制：左=prev（上一个完整背景）；右=当前（含过渡）
-  drawField(prev, 0, half);
-  drawField(sRight, half, half);
+  const half=W*0.5;
+  drawField(snap, 0, half);               // 左：固定
+  drawField(live, half, half);            // 右：动态
 
-  // 分割线（仅调试）
-  ctx.fillStyle="rgba(255,255,255,0.12)";
+  // 中间调试辅助线
+  ctx.fillStyle="rgba(255,255,255,0.16)";
   ctx.fillRect(half-0.5,0,1,H);
+  // 辅助线两侧再加一个很淡的“安全边界”，让眼睛更容易分区
+  ctx.fillStyle="rgba(0,0,0,0.10)";
+  ctx.fillRect(half-12,0,11,H);
+  ctx.fillRect(half+1,0,11,H);
 }
 requestAnimationFrame(tick);
 })();
