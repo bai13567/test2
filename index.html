@@ -2,145 +2,125 @@
 <html lang="zh">
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
-<title>Light Warm Ambient Background</title>
-
+<title>Light Warm Textured Background</title>
 <style>
-html,body{
-  margin:0;
-  height:100%;
-  overflow:hidden;
-  background:#f4efe9; /* 非黑背景，避免闪屏 */
-}
-canvas{
-  position:fixed;
-  inset:0;
-  width:100%;
-  height:100%;
-  display:block;
-  touch-action:none;
-}
+  html,body{margin:0;height:100%;overflow:hidden;background:#f4efe9}
+  canvas{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none}
 </style>
-
 <canvas id="c"></canvas>
-
 <script>
-(()=>{
+(()=> {
+  const c=document.getElementById("c");
+  const gl=c.getContext("webgl",{antialias:false,alpha:false});
+  if(!gl) return;
 
-const c = document.getElementById("c");
-const gl = c.getContext("webgl",{antialias:false,alpha:false});
-if(!gl) return;
+  const V=`attribute vec2 p;void main(){gl_Position=vec4(p,0.,1.);}`;
+  const F=`precision highp float;
+  uniform vec2 r; uniform float t;
 
-const V = `
-attribute vec2 p;
-void main(){ gl_Position = vec4(p,0.,1.); }
-`;
-
-const F = `
-precision highp float;
-uniform vec2 r;
-uniform float t;
-
-/* smooth noise */
-float h(vec2 p){ return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453); }
-float n(vec2 p){
-  vec2 i=floor(p), f=fract(p);
-  f=f*f*(3.-2.*f);
-  return mix(
-    mix(h(i),h(i+vec2(1,0)),f.x),
-    mix(h(i+vec2(0,1)),h(i+vec2(1,1)),f.x),
-    f.y
-  );
-}
-float fbm(vec2 p){
-  float v=0., a=.6;
-  for(int i=0;i<4;i++){
-    v+=a*n(p); p*=1.8; a*=.5;
+  float h(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
+  float n(vec2 p){
+    vec2 i=floor(p), f=fract(p); f=f*f*(3.-2.*f);
+    float a=h(i), b=h(i+vec2(1,0)), c=h(i+vec2(0,1)), d=h(i+vec2(1,1));
+    return mix(mix(a,b,f.x), mix(c,d,f.x), f.y);
   }
-  return v;
-}
+  float fbm(vec2 p){
+    float v=0., a=.58;
+    for(int i=0;i<5;i++){ v+=a*n(p); p=p*1.85+17.3; a*=.52; }
+    return v;
+  }
 
-/* 纯亮暖色系调色板（无暗色） */
-vec3 palette(float x){
-  vec3 a = vec3(0.96,0.94,0.92); // warm white
-  vec3 b = vec3(0.99,0.90,0.78); // cream
-  vec3 c = vec3(0.98,0.84,0.70); // champagne
-  vec3 d = vec3(0.95,0.80,0.78); // soft rose
+  // 亮暖色系（不含暗色）
+  vec3 palette(float x){
+    vec3 a=vec3(0.97,0.95,0.93); // warm white
+    vec3 b=vec3(0.99,0.91,0.80); // cream
+    vec3 c=vec3(0.99,0.86,0.72); // champagne
+    vec3 d=vec3(0.96,0.82,0.82); // soft rose
+    vec3 col=mix(a,b,smoothstep(0.05,0.40,x));
+    col=mix(col,c,smoothstep(0.35,0.70,x));
+    col=mix(col,d,smoothstep(0.70,1.00,x));
+    return col;
+  }
 
-  vec3 col = mix(a,b,smoothstep(0.0,0.4,x));
-  col = mix(col,c,smoothstep(0.3,0.7,x));
-  col = mix(col,d,smoothstep(0.6,1.0,x));
-  return col;
-}
+  void main(){
+    vec2 uv = (gl_FragCoord.xy / r) * 2.0 - 1.0;
+    uv.x *= r.x / r.y;
 
-void main(){
-  vec2 uv = gl_FragCoord.xy / r;
-  uv = uv*2.0 - 1.0;
-  uv.x *= r.x / r.y;
+    // 强一点的域扭曲：让纹理“流起来”
+    vec2 p = uv*1.15;
+    float w1 = fbm(p + vec2(0.00, t*0.18));
+    float w2 = fbm(p*1.7 - vec2(t*0.14, 0.00));
+    p += 0.22*vec2(w1-0.5, w2-0.5);
 
-  float base = fbm(uv*1.2 + vec2(0.0,t*0.05));
-  float detail = fbm(uv*4.0 - vec2(t*0.08,0.0));
+    // 主形态（低频） + 细节（高频）
+    float base = fbm(p*1.1 + vec2(0.0, t*0.10));
+    float detail = fbm(p*6.0 - vec2(t*0.24, 0.0));
 
-  float mixv = base*0.7 + detail*0.3;
+    // 让细节变“可见”：用细节做浅浮雕式明暗（但不引入暗色）
+    float emboss = (detail - 0.5);
+    float x = clamp(base*0.72 + detail*0.28, 0.0, 1.0);
 
-  vec3 col = palette(mixv);
+    vec3 col = palette(x);
 
-  /* 只允许轻微亮度浮动，不引入暗部 */
-  float light = 0.92 + 0.10*detail;
-  col *= light;
+    // 提升纹理可见度：中高亮范围内做轻微对比增强
+    float light = 0.92 + 0.12*emboss;     // 变化更明显
+    light = clamp(light, 0.86, 1.06);     // 仍然不会变黑
+    col *= light;
 
-  col = clamp(col,0.0,1.0);
-  col = pow(col,vec3(0.98)); // very gentle gamma
+    // 加一点“丝绸高光”流动（仍然只在亮部做）
+    float sheen = smoothstep(0.35, 0.95, sin((base+detail*0.6 + t*0.22)*6.2831));
+    col = mix(col, col*1.035, 0.25*sheen);
 
-  gl_FragColor = vec4(col,1.0);
-}
-`;
+    col = clamp(col, 0.0, 1.0);
+    col = pow(col, vec3(0.98));
+    gl_FragColor = vec4(col,1.0);
+  }`;
 
-function sh(t,s){
-  const x=gl.createShader(t);
-  gl.shaderSource(x,s);
-  gl.compileShader(x);
-  return x;
-}
+  function sh(type,src){
+    const s=gl.createShader(type);
+    gl.shaderSource(s,src);
+    gl.compileShader(s);
+    return s;
+  }
+  const P=gl.createProgram();
+  gl.attachShader(P,sh(gl.VERTEX_SHADER,V));
+  gl.attachShader(P,sh(gl.FRAGMENT_SHADER,F));
+  gl.linkProgram(P);
+  gl.useProgram(P);
 
-const P = gl.createProgram();
-gl.attachShader(P,sh(gl.VERTEX_SHADER,V));
-gl.attachShader(P,sh(gl.FRAGMENT_SHADER,F));
-gl.linkProgram(P);
-gl.useProgram(P);
+  const buf=gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER,buf);
+  gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]),gl.STATIC_DRAW);
+  const loc=gl.getAttribLocation(P,"p");
+  gl.enableVertexAttribArray(loc);
+  gl.vertexAttribPointer(loc,2,gl.FLOAT,false,0,0);
 
-/* quad */
-const buf = gl.createBuffer();
-gl.bindBuffer(gl.ARRAY_BUFFER,buf);
-gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([
-  -1,-1, 1,-1, -1,1,
-  -1,1, 1,-1, 1,1
-]),gl.STATIC_DRAW);
-const loc = gl.getAttribLocation(P,"p");
-gl.enableVertexAttribArray(loc);
-gl.vertexAttribPointer(loc,2,gl.FLOAT,false,0,0);
+  const ur=gl.getUniformLocation(P,"r");
+  const ut=gl.getUniformLocation(P,"t");
 
-const ur = gl.getUniformLocation(P,"r");
-const ut = gl.getUniformLocation(P,"t");
+  function resize(){
+    const d=Math.min(2,devicePixelRatio||1);
+    const vw=visualViewport?visualViewport.width:innerWidth;
+    const vh=visualViewport?visualViewport.height:innerHeight;
+    c.width=Math.max(1,Math.floor(vw*d));
+    c.height=Math.max(1,Math.floor(vh*d));
+    gl.viewport(0,0,c.width,c.height);
+    gl.uniform2f(ur,c.width,c.height);
+  }
+  addEventListener("resize",resize,{passive:true});
+  visualViewport && visualViewport.addEventListener("resize",resize,{passive:true});
+  resize();
 
-function resize(){
-  const d = Math.min(2,devicePixelRatio||1);
-  const w = (visualViewport?visualViewport.width:innerWidth)*d;
-  const h = (visualViewport?visualViewport.height:innerHeight)*d;
-  c.width=w; c.height=h;
-  gl.viewport(0,0,w,h);
-  gl.uniform2f(ur,w,h);
-}
-addEventListener("resize",resize,{passive:true});
-visualViewport && visualViewport.addEventListener("resize",resize,{passive:true});
-resize();
+  let t0=performance.now(), paused=false;
+  document.addEventListener("visibilitychange",()=>paused=document.hidden,{passive:true});
 
-let t0 = performance.now();
-(function loop(now){
-  gl.uniform1f(ut,(now-t0)/1000);
-  gl.drawArrays(gl.TRIANGLES,0,6);
-  requestAnimationFrame(loop);
-})(t0);
-
+  (function loop(now){
+    if(!paused){
+      gl.uniform1f(ut,(now-t0)/1000);
+      gl.drawArrays(gl.TRIANGLES,0,6);
+    }
+    requestAnimationFrame(loop);
+  })(t0);
 })();
 </script>
 </html>
