@@ -1,6 +1,6 @@
 <!doctype html><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>Warm Healing AAA Background</title>
+<title>Warm Healing (Curated + Scored)</title>
 <style>
 html,body{margin:0;height:100%;background:#07060a;overflow:hidden;font:12px ui-monospace,Menlo,Consolas,monospace}
 #c{position:fixed;inset:0;display:block}
@@ -16,8 +16,8 @@ box-shadow:0 0 0 1px #fff1 inset}
 #err{position:fixed;left:12px;right:12px;bottom:12px;z-index:99;color:#ffd1d1;background:#2a0000cc;border:1px solid #ff6a6a55;
 border-radius:12px;padding:10px 12px;display:none;white-space:pre-wrap}
 body:before{content:"";position:fixed;inset:-60px;pointer-events:none;background:
-repeating-linear-gradient(0deg,rgba(255,255,255,.04),rgba(255,255,255,.04) 1px,transparent 2px,transparent 7px);
-mix-blend-mode:overlay;opacity:.14;animation:scan 12s linear infinite}
+repeating-linear-gradient(0deg,rgba(255,255,255,.035),rgba(255,255,255,.035) 1px,transparent 2px,transparent 8px);
+mix-blend-mode:overlay;opacity:.12;animation:scan 14s linear infinite}
 @keyframes scan{to{transform:translateY(60px)}}
 </style>
 
@@ -42,7 +42,7 @@ const VSH=`attribute vec2 p;varying vec2 v;void main(){v=p*0.5+0.5;gl_Position=v
 const FSH=`precision highp float;varying vec2 v;
 uniform vec2 R;uniform float T;uniform vec4 A;uniform vec4 B;uniform vec4 C;uniform vec3 H;uniform float Q;
 
-// noise / fbm
+// hash / noise / fbm
 float hash(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453123);}
 float noise(vec2 p){
   vec2 i=floor(p),f=fract(p);vec2 u=f*f*(3.0-2.0*f);
@@ -59,53 +59,93 @@ vec3 hsv2rgb(vec3 c){
   vec3 p=abs(fract(c.xxx+K.xyz)*6.-K.www);
   return c.z*mix(K.xxx,clamp(p-K.xxx,0.,1.),c.y);
 }
-vec3 warmPalette(float x){
-  // H.x base warm hue; H.y secondary warm; H.z soft teal accent (tiny)
-  vec3 c1=hsv2rgb(vec3(H.x, 0.85, 1.0));
-  vec3 c2=hsv2rgb(vec3(H.y, 0.80, 1.0));
-  vec3 c3=hsv2rgb(vec3(H.z, 0.55, 1.0));
-  vec3 col=mix(c1,c2,smoothstep(0.10,0.90,x));
-  col=mix(col,c3,smoothstep(0.78,0.98,x)*0.18);
+
+// Warm palette: avoid “mud” by keeping chroma cleaner + teal only as tiny highlight
+vec3 warmPal(float x){
+  vec3 c1=hsv2rgb(vec3(H.x, 0.86, 1.0)); // base warm
+  vec3 c2=hsv2rgb(vec3(H.y, 0.78, 1.0)); // secondary warm
+  vec3 c3=hsv2rgb(vec3(H.z, 0.50, 1.0)); // teal seasoning (low sat)
+  vec3 col=mix(c1,c2,smoothstep(0.12,0.88,x));
+  col=mix(col,c3,smoothstep(0.80,0.98,x)*0.14);
   return col;
 }
+
+// simple “fake normal” from field for lighting
+vec3 fakeNormal(vec2 p, float f){
+  float e=0.003;
+  float fx = f - fbm((p+vec2(e,0.))*1.7);
+  float fy = f - fbm((p+vec2(0.,e))*1.7);
+  return normalize(vec3(fx,fy,0.6));
+}
+
 void main(){
   vec2 uv=(gl_FragCoord.xy-0.5*R)/R.y;
 
+  // Camera drift (calm)
   float t=T*(0.55+0.70*A.w);
-  vec2 cam=vec2(sin(t*0.06),cos(t*0.05))*0.12*(0.30+0.70*B.w);
+  vec2 cam=vec2(sin(t*0.06),cos(t*0.05))*0.10*(0.35+0.65*B.w);
   uv += cam;
 
-  // gentle domain warp
+  // ---------- Layered structure (low/mid/high) ----------
   vec2 p=uv;
-  float w1=fbm(p*(1.2+2.0*A.x)+vec2(t*0.09,-t*0.07));
-  float w2=fbm(p*(1.8+2.6*A.y)+vec2(-t*0.05,t*0.10));
-  p += vec2(w1-w2,w2-w1)*(0.12+0.42*A.z);
 
-  float r=length(p)+1e-4, ang=atan(p.y,p.x);
+  // Low frequency “big shape”
+  float low = fbm(p*(0.75+1.15*A.x) + vec2(t*0.05,-t*0.03));
+  // Mid frequency “flow”
+  vec2 pw = p + vec2(low-0.5, 0.5-low) * (0.10+0.30*A.z);
+  float mid = fbm(pw*(1.70+2.60*A.y) + vec2(-t*0.07,t*0.06));
+  // High frequency “detail” but controlled (avoid dirt)
+  vec2 pd = pw + vec2(mid-0.5, 0.5-mid) * (0.06+0.22*B.z);
+  float hi  = fbm(pd*(3.00+4.40*C.x) + vec2(t*0.10,-t*0.09));
 
-  float veins = fbm(p*(2.8+5.0*C.x) + vec2(t*0.10,-t*0.08));
-  float mist  = fbm(p*(1.1+2.8*C.y) - vec2(t*0.04,t*0.03));
-  float bands = sin((r*(6.5+10.0*B.x)-t*(1.0+1.2*B.y)) + ang*(2.0+4.0*B.z));
-  float core  = exp(-r*(1.4+2.2*C.z));
+  // Combine with weights that avoid “one mushy layer”
+  float field = 0.52*low + 0.36*mid + 0.22*hi;
 
-  float field = 0.55*veins + 0.36*mist + 0.18*(bands*0.5+0.5) + 0.42*core;
-  field = smoothstep(0.02,0.98, clamp(field,0.,1.));
+  // Add gentle bands for “designed” feel (not chaotic)
+  float r=length(pd)+1e-4;
+  float ang=atan(pd.y,pd.x);
+  float bands = sin(r*(5.5+7.5*B.x) - t*(0.9+1.1*B.y) + ang*(1.8+2.8*B.z));
+  field += 0.10*(bands*0.5+0.5);
 
-  vec3 col = warmPalette(field);
+  // Core light well (gives hierarchy + avoids flat muddy sheets)
+  float core = exp(-r*(1.6+2.0*C.z));
+  field += 0.28*core;
 
-  float glow = pow(field,2.0)*(0.30+0.90*B.w) + core*(0.55+0.65*A.w);
-  col += col*glow*(0.55+0.75*A.y);
+  // Shape curve: more contrast in mid tones (kills muddy)
+  field = clamp(field,0.,1.);
+  field = smoothstep(0.05,0.98, field);
+  field = pow(field, 0.85+0.20*C.y);
 
+  // Base color
+  vec3 col = warmPal(field);
+
+  // ---------- Lighting (critical for “clean” look) ----------
+  vec3 nrm = fakeNormal(pd, mid);
+  vec3 L = normalize(vec3(-0.25,0.85,0.55));
+  float diff = clamp(dot(nrm,L)*0.6+0.4,0.,1.);
+  float rim  = pow(clamp(1.0-dot(nrm,vec3(0,0,1)),0.,1.),2.0);
+  col *= mix(0.88, 1.10, diff);
+  col += rim * col * (0.10+0.22*B.w);
+
+  // ---------- Glow (kept warm, avoids neon grime) ----------
+  float glow = pow(field, 2.0)*(0.22+0.75*B.w) + core*(0.50+0.55*A.w);
+  col += col * glow * (0.40+0.55*A.y);
+
+  // Filmic curve
   col = col/(1.0+col);
-  col = pow(col, vec3(0.95+0.10*C.y));
+  col = pow(col, vec3(0.96)); // slightly softer
 
-  float vig = smoothstep(1.20,0.20,length(uv));
-  col *= (0.78+0.45*vig);
+  // Vignette
+  float vig = smoothstep(1.25,0.22,length(uv));
+  col *= (0.82+0.38*vig);
 
-  float g = hash(gl_FragCoord.xy + vec2(T*55.0, T*33.0));
-  col += (g-0.5) * (0.012+0.012*(1.0-vig)) * (0.35+0.65*C.x);
+  // Grain (luma-ish, subtle)
+  float g = hash(gl_FragCoord.xy + vec2(T*50.0, T*31.0));
+  col += (g-0.5) * (0.010+0.010*(1.0-vig)) * (0.35+0.65*C.x);
 
-  col = mix(col, col*1.04, clamp((1.0-Q)*1.0,0.,0.5));
+  // Adaptive Q compensation
+  col = mix(col, col*1.03, clamp((1.0-Q)*1.0,0.,0.5));
+
   gl_FragColor=vec4(col,1.0);
 }`;
 
@@ -114,24 +154,23 @@ function compile(type,src){
   if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)||"shader compile failed");
   return s;
 }
-let prog,loc={},buf;
-function build(){
+let prog,loc={};
+(function build(){
   try{
     const vs=compile(gl.VERTEX_SHADER,VSH), fs=compile(gl.FRAGMENT_SHADER,FSH);
     prog=gl.createProgram(); gl.attachShader(prog,vs); gl.attachShader(prog,fs); gl.linkProgram(prog);
     if(!gl.getProgramParameter(prog,gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog)||"program link failed");
     gl.useProgram(prog);
-    buf=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,buf);
+    const buf=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,buf);
     gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1, 1,-1, -1,1, 1,1]),gl.STATIC_DRAW);
     const pLoc=gl.getAttribLocation(prog,"p"); gl.enableVertexAttribArray(pLoc);
     gl.vertexAttribPointer(pLoc,2,gl.FLOAT,false,0,0);
     ["R","T","A","B","C","H","Q"].forEach(k=>loc[k]=gl.getUniformLocation(prog,k));
     ERR.style.display="none";
   }catch(e){ERR.style.display="block";ERR.textContent=String(e);}
-}
-build();
+})();
 
-// ---- Offscreen preview FBO for scoring ----
+// ---- Offscreen preview FBO for scoring (tiny) ----
 const PRE=64;
 let scoringOK=true;
 const fbo=gl.createFramebuffer();
@@ -148,20 +187,23 @@ if(gl.checkFramebufferStatus(gl.FRAMEBUFFER)!==gl.FRAMEBUFFER_COMPLETE) scoringO
 gl.bindFramebuffer(gl.FRAMEBUFFER,null);
 const pix=new Uint8Array(PRE*PRE*4);
 
-// ---- Controlled warm random generator ----
+// ---- Warm “good-looking” param generator (more constrained) ----
 const rnd=()=>Math.random();
 function genParams(){
-  const hBase = lerp(25/360, 55/360, Math.pow(rnd(),0.7));
-  const h2    = clamp(hBase - lerp(6/360,18/360,rnd()) + (rnd()<0.35? lerp(4/360,10/360,rnd()):0), 0, 1);
+  // warm base 28°..50°, secondary close-by; teal accent tiny 175°..200°
+  const hBase = lerp(28/360, 50/360, Math.pow(rnd(),0.65));
+  const h2    = clamp(hBase + lerp(-12/360, 10/360, rnd()), 0, 1);
   const hTeal = lerp(175/360, 200/360, rnd());
-  const A=[rnd(),rnd(), 0.18+0.52*rnd(), 0.62+0.35*rnd()];
-  const B=[0.22+0.60*rnd(), 0.25+0.55*rnd(), 0.10+0.65*rnd(), 0.55+0.45*rnd()];
-  const C=[0.28+0.62*rnd(), 0.22+0.62*rnd(), 0.24+0.70*rnd(), 0];
+
+  // reduce chaos: keep warp + frequencies in tasteful ranges
+  const A=[0.25+0.60*rnd(), 0.25+0.60*rnd(), 0.18+0.42*rnd(), 0.65+0.30*rnd()];
+  const B=[0.25+0.55*rnd(), 0.25+0.55*rnd(), 0.10+0.55*rnd(), 0.55+0.45*rnd()];
+  const C=[0.30+0.60*rnd(), 0.20+0.55*rnd(), 0.25+0.60*rnd(), 0];
   const H=[hBase,h2,hTeal];
   return {A,B,C,H};
 }
 
-// ---- Scoring ----
+// ---- Scoring (now includes “muddy warm gray” & channel-correlation penalties + multi-time sampling) ----
 function rgb2hsv(r,g,b){
   const mx=Math.max(r,g,b), mn=Math.min(r,g,b), d=mx-mn;
   let h=0;
@@ -174,58 +216,110 @@ function rgb2hsv(r,g,b){
   const s=mx===0?0:d/mx, v=mx;
   return [h,s,v];
 }
-function scorePixels(){
+
+function scoreOneFrame(){
   let n=PRE*PRE, lumSum=0, lum2=0, satSum=0, warm=0, purple=0, dark=0, hot=0, teal=0;
-  let grad=0, hiFreq=0;
+  let grad1=0, grad2=0, hiFreq=0, muddy=0, corr=0;
+
   for(let y=0;y<PRE;y++)for(let x=0;x<PRE;x++){
     const i=(y*PRE+x)*4;
     const r=pix[i]/255, g=pix[i+1]/255, b=pix[i+2]/255;
     const lum=0.2126*r+0.7152*g+0.0722*b;
     lumSum+=lum; lum2+=lum*lum;
-    const hsv=rgb2hsv(r,g,b), h=hsv[0], s=hsv[1];
+    const [h,s,v]=rgb2hsv(r,g,b);
     satSum+=s;
 
+    // warm target
     if((h>=0 && h<15/360) || (h>=15/360 && h<=70/360)) warm++;
+    // purple/magenta (kill)
     if(h>=255/360 && h<=330/360) purple++;
+    // teal allowed small
     if(h>=165/360 && h<=210/360) teal++;
 
     if(lum<0.10) dark++;
     if(lum>0.92 && s>0.55) hot++;
 
+    // NEW: muddy gray-in-warm detection (your screenshot type)
+    // medium lum + medium sat + channels very close => “mud”
+    if(s>0.12 && s<0.42 && lum>0.32 && lum<0.78){
+      const rg=Math.abs(r-g), rb=Math.abs(r-b), gb=Math.abs(g-b);
+      if(rg<0.06 && rb<0.06 && gb<0.06) muddy++;
+      // channel correlation measure (cheap): closeness also increases corr
+      corr += (0.06 - Math.min(0.06, rg)) + (0.06 - Math.min(0.06, rb)) + (0.06 - Math.min(0.06, gb));
+    }
+
+    // texture energy at two scales: encourage mid-frequency, avoid harsh hi-frequency
+    const L=lum;
     if(x>0){
       const j=i-4;
-      const dr=r-pix[j]/255, dg=g-pix[j+1]/255, db=b-pix[j+2]/255;
-      const dL=Math.abs(0.2126*dr+0.7152*dg+0.0722*db);
-      grad+=dL; if(dL>0.20) hiFreq++;
+      const r2=pix[j]/255, g2=pix[j+1]/255, b2=pix[j+2]/255;
+      const lum2p=0.2126*r2+0.7152*g2+0.0722*b2;
+      const dL=Math.abs(L-lum2p);
+      grad1+=dL; if(dL>0.22) hiFreq++;
     }
     if(y>0){
       const j=i-PRE*4;
-      const dr=r-pix[j]/255, dg=g-pix[j+1]/255, db=b-pix[j+2]/255;
-      const dL=Math.abs(0.2126*dr+0.7152*dg+0.0722*db);
-      grad+=dL; if(dL>0.20) hiFreq++;
+      const r2=pix[j]/255, g2=pix[j+1]/255, b2=pix[j+2]/255;
+      const lum2p=0.2126*r2+0.7152*g2+0.0722*b2;
+      const dL=Math.abs(L-lum2p);
+      grad1+=dL; if(dL>0.22) hiFreq++;
+    }
+    // second scale (skip 2 px) -> mid structure
+    if(x>2){
+      const j=i-8;
+      const r2=pix[j]/255, g2=pix[j+1]/255, b2=pix[j+2]/255;
+      const lum2p=0.2126*r2+0.7152*g2+0.0722*b2;
+      grad2+=Math.abs(L-lum2p);
+    }
+    if(y>2){
+      const j=i-PRE*8;
+      const r2=pix[j]/255, g2=pix[j+1]/255, b2=pix[j+2]/255;
+      const lum2p=0.2126*r2+0.7152*g2+0.0722*b2;
+      grad2+=Math.abs(L-lum2p);
     }
   }
+
   const lumMean=lumSum/n, lumVar=Math.max(0, lum2/n - lumMean*lumMean), lumStd=Math.sqrt(lumVar);
   const satMean=satSum/n;
   const warmP=warm/n, purpleP=purple/n, darkP=dark/n, hotP=hot/n, tealP=teal/n;
-  const gradMean=grad/(n*2), hiFreqP=hiFreq/(n*2);
+  const gradMean=grad1/(n*2), midMean=grad2/(n*2);
+  const hiFreqP=hiFreq/(n*2);
+  const muddyP=muddy/n;
+  const corrN=corr/n; // higher means channels too close
 
+  // score 0..100
   let score=0;
-  score += 42 * clamp((warmP-0.55)/0.35, 0, 1);
-  score += 18 * Math.exp(-Math.pow((lumMean-0.55)/0.18,2));
-  score += 10 * Math.exp(-Math.pow((lumStd-0.20)/0.10,2));
-  score += 10 * Math.exp(-Math.pow((satMean-0.45)/0.18,2));
-  score -= 55 * clamp((purpleP-0.02)/0.06, 0, 1);
-  score -= 25 * clamp((darkP-0.08)/0.18, 0, 1);
-  score -= 18 * clamp((hotP-0.03)/0.10, 0, 1);
-  score -= 12 * clamp((tealP-0.16)/0.20, 0, 1);
-  score += 8  * clamp((gradMean-0.03)/0.05, 0, 1);
-  score -= 16 * clamp((hiFreqP-0.01)/0.06, 0, 1);
+
+  // Warm dominance and “comfort brightness”
+  score += 34 * clamp((warmP-0.58)/0.30, 0, 1);
+  score += 18 * Math.exp(-Math.pow((lumMean-0.56)/0.16,2));
+
+  // Contrast + saturation sweet spot
+  score += 12 * Math.exp(-Math.pow((lumStd-0.20)/0.09,2));
+  score += 10 * Math.exp(-Math.pow((satMean-0.48)/0.16,2));
+
+  // Must have mid-structure (fix “mushy blur”)
+  score += 10 * clamp((midMean-0.035)/0.055, 0, 1);
+
+  // Penalties
+  score -= 60 * clamp((purpleP-0.01)/0.04, 0, 1);
+  score -= 26 * clamp((darkP-0.06)/0.16, 0, 1);
+  score -= 16 * clamp((hotP-0.03)/0.10, 0, 1);
+  score -= 12 * clamp((tealP-0.14)/0.18, 0, 1);
+
+  // NEW: muddy + channel-correlation penalty (this kills your “脏脏的奶茶泥浆感”)
+  score -= 48 * clamp((muddyP-0.06)/0.12, 0, 1);
+  score -= 18 * clamp((corrN-0.030)/0.030, 0, 1);
+
+  // Avoid harsh noise
+  score -= 14 * clamp((hiFreqP-0.010)/0.050, 0, 1);
+  // Some fine gradient is good (but don’t over-reward)
+  score += 6  * clamp((gradMean-0.028)/0.050, 0, 1);
+
   return clamp(score,0,100);
 }
 
-// ---- Preview render (FIXED: restores viewport + framebuffer, preventing the “tiny corner” bug) ----
-function renderPreview(params){
+function renderPreview(params, timeSnap){
   if(!scoringOK) return;
   const prevFbo=gl.getParameter(gl.FRAMEBUFFER_BINDING);
   const prevVp =gl.getParameter(gl.VIEWPORT);
@@ -235,7 +329,7 @@ function renderPreview(params){
 
   gl.useProgram(prog);
   gl.uniform2f(loc.R, PRE, PRE);
-  gl.uniform1f(loc.T, 1.37);
+  gl.uniform1f(loc.T, timeSnap);
   gl.uniform4f(loc.A, params.A[0],params.A[1],params.A[2],params.A[3]);
   gl.uniform4f(loc.B, params.B[0],params.B[1],params.B[2],params.B[3]);
   gl.uniform4f(loc.C, params.C[0],params.C[1],params.C[2],params.C[3]);
@@ -245,30 +339,42 @@ function renderPreview(params){
 
   gl.readPixels(0,0,PRE,PRE,gl.RGBA,gl.UNSIGNED_BYTE,pix);
 
+  // RESTORE STATE (prevents “tiny corner” + other state leaks)
   gl.bindFramebuffer(gl.FRAMEBUFFER,prevFbo);
   gl.viewport(prevVp[0],prevVp[1],prevVp[2],prevVp[3]);
 }
 
-function findGoodCandidate(maxTry=10, threshold=72){
-  if(!scoringOK){
-    const p=genParams(); p._score=0; return p;
+function scoreCandidate(params){
+  if(!scoringOK) return 0;
+  // multi-time sampling: avoids “某一刻好看，动起来变脏”
+  const ts=[0.7, 1.9, 3.2];
+  let s=0;
+  for(let i=0;i<ts.length;i++){
+    renderPreview(params, ts[i]);
+    s += scoreOneFrame();
   }
+  return s/ts.length;
+}
+
+function findGoodCandidate(maxTry=14, threshold=78){
+  const pFallback=genParams(); pFallback._score=0;
+  if(!scoringOK) return pFallback;
+
   let best=null, bestScore=-1;
   for(let i=0;i<maxTry;i++){
     const p=genParams();
-    renderPreview(p);
-    const sc=scorePixels();
+    const sc=scoreCandidate(p);
     if(sc>bestScore){bestScore=sc; best=p; best._score=sc;}
     if(sc>=threshold) return best;
   }
-  return best;
+  return best || pFallback;
 }
 
 // ---- Runtime rendering ----
 let W=0,H=0,dpr=1,scale=1,ema=60;
 const target = mobile ? 60 : 90;
 
-let cur=findGoodCandidate(8,74), next=null, t0=performance.now(), last=performance.now();
+let cur=findGoodCandidate(12,80), next=null, t0=performance.now(), last=performance.now();
 
 function resize(){
   dpr=clamp(devicePixelRatio||1,1,mobile?2.0:2.6);
@@ -287,14 +393,14 @@ function scheduleNext(){
   if(!scoringOK){ next=genParams(); next._score=0; return; }
   let tries=0, best=null, bestScore=-1;
   const step=()=>{
-    const batch=2; // small batches to avoid iOS stutter
+    // small batches (iOS stutter control)
+    const batch=1;
     for(let k=0;k<batch;k++){
       const p=genParams();
-      renderPreview(p);
-      const sc=scorePixels();
+      const sc=scoreCandidate(p);
       tries++;
       if(sc>bestScore){bestScore=sc; best=p; best._score=sc;}
-      if(sc>=76 || tries>=14){ next=best; return; }
+      if(sc>=82 || tries>=18){ next=best; return; }
     }
     setTimeout(step,0);
   };
@@ -303,12 +409,11 @@ function scheduleNext(){
 
 function switchNow(){
   if(next){apply(next); next=null; scheduleNext();}
-  else {apply(findGoodCandidate(6,74)); scheduleNext();}
+  else {apply(findGoodCandidate(10,80)); scheduleNext();}
   clearInterval(auto); auto=setInterval(()=>switchNow(),60*1000);
 }
 
 BTN.onclick=switchNow;
-
 let auto=setInterval(()=>switchNow(),60*1000);
 scheduleNext();
 
@@ -317,18 +422,21 @@ function draw(now){
   const dt=now-last; last=now;
   const fps=1000/(dt||16.7); ema=ema*0.92+fps*0.08;
 
-  if(ema<target*0.92) scale=clamp(scale*0.985, 0.78, 1.0);
-  if(ema>target*1.03) scale=clamp(scale*1.003, 0.78, 1.0);
+  // adaptive scale: prefer crisp, but keep smooth
+  if(ema<target*0.92) scale=clamp(scale*0.985, 0.80, 1.0);
+  if(ema>target*1.03) scale=clamp(scale*1.003, 0.80, 1.0);
   if((now|0)%250<dt && Math.abs(canvas.width-(W*dpr*scale))>2) resize();
 
   gl.useProgram(prog);
   gl.uniform2f(loc.R, canvas.width, canvas.height);
   gl.uniform1f(loc.T, (now-t0)*0.001);
+
   gl.uniform4f(loc.A, cur.A[0],cur.A[1],cur.A[2],cur.A[3]);
   gl.uniform4f(loc.B, cur.B[0],cur.B[1],cur.B[2],cur.B[3]);
   gl.uniform4f(loc.C, cur.C[0],cur.C[1],cur.C[2],cur.C[3]);
   gl.uniform3f(loc.H, cur.H[0],cur.H[1],cur.H[2]);
   gl.uniform1f(loc.Q, scale);
+
   gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
 
   if(((now/250)|0)%2===0){
