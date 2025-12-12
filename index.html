@@ -1,39 +1,38 @@
 <!doctype html><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>Ambient Gradient Field</title>
+<title>Ambient Gradient Field · Debug Speed</title>
 <style>
 html,body{margin:0;height:100%;overflow:hidden;background:#050505}
 canvas{position:fixed;inset:0;display:block}
-#err{position:fixed;left:12px;right:12px;bottom:12px;z-index:9;display:none;
-background:#2a0000cc;border:1px solid #ff6a6a55;color:#ffd1d1;border-radius:12px;
-padding:10px 12px;white-space:pre-wrap;font:12px ui-monospace,Menlo,Consolas,monospace}
 </style>
-<canvas id="c"></canvas><div id="err"></div>
+<canvas id="c"></canvas>
 
 <script>
 (()=>{"use strict";
 const C=document.getElementById("c"), ctx=C.getContext("2d",{alpha:false});
-const ERR=document.getElementById("err");
 const clamp=(x,a,b)=>x<a?a:x>b?b:x;
 const lerp=(a,b,t)=>a+(b-a)*t;
 const mix3=(A,B,t)=>[lerp(A[0],B[0],t),lerp(A[1],B[1],t),lerp(A[2],B[2],t)];
 const rgb=(c,a=1)=>`rgba(${c[0]|0},${c[1]|0},${c[2]|0},${a})`;
-function showErr(e){ERR.style.display="block";ERR.textContent=String(e&&(e.stack||e.message)||e);}
 
-try{
-// ---------- size ----------
+// ======================
+// 🔥 DEBUG SPEED CONTROL
+// ======================
+const SPEED = 12; // ← 调试用：5 秒内明显变化；最终版改回 1
+// ======================
+
 let W=0,H=0,DPR=1;
 function resize(){
-  DPR=clamp(devicePixelRatio||1,1,2); // keep iOS stable
+  DPR=Math.min(devicePixelRatio||1,2);
   W=innerWidth; H=innerHeight;
-  C.width=Math.max(2,(W*DPR)|0);
-  C.height=Math.max(2,(H*DPR)|0);
+  C.width=(W*DPR)|0; C.height=(H*DPR)|0;
   C.style.width=W+"px"; C.style.height=H+"px";
   ctx.setTransform(DPR,0,0,DPR,0,0);
 }
-addEventListener("resize",resize,{passive:true}); resize();
+addEventListener("resize",resize,{passive:true});
+resize();
 
-// ---------- quasi-aperiodic slow drivers (no readable loop) ----------
+// -------- slow drivers (same logic, faster time) --------
 const PHI=1.61803398875, SQ2=1.41421356237, PI=Math.PI;
 const s1=(t,a,b,c)=>Math.sin(t*a)+0.72*Math.sin(t*b+1.7)+0.46*Math.sin(t*c+0.31);
 function slow01(t,rate,seed){
@@ -41,168 +40,75 @@ function slow01(t,rate,seed){
   const x=s1(t*r, r*PHI*(1+0.011*seed), r*SQ2*(1+0.013*seed), r*PI*(1+0.009*seed));
   return 0.5+0.5*(x/2.15);
 }
-function ease(x){ return x*x*(3-2*x); }
+const ease=x=>x*x*(3-2*x);
 
-// ---------- color: warm-neutral "hotel air" (tight gamut, no purple/pink/blue) ----------
+// -------- palettes --------
 const P0={top:[252,248,242], mid:[238,224,204], low:[214,182,140], ink:[28,22,18]};
 const P1={top:[251,246,239], mid:[236,219,196], low:[208,170,126], ink:[26,20,16]};
 const P2={top:[252,247,240], mid:[233,214,188], low:[200,162,120], ink:[24,18,14]};
+
 function paletteAt(t){
-  // minute-scale drift; *state* not *animation*
-  const p = ease(slow01(t,0.00105, 7));   // ~15min drift
-  const q = ease(slow01(t,0.00082, 9));   // second axis
-  const A = p<0.5?P0:P1, B=p<0.5?P1:P2, tt=p<0.5?p/0.5:(p-0.5)/0.5;
+  const p=ease(slow01(t*SPEED,0.00105,7));
+  const q=ease(slow01(t*SPEED,0.00082,9));
+  const A=p<0.5?P0:P1, B=p<0.5?P1:P2;
+  const tt=p<0.5?p/0.5:(p-0.5)/0.5;
   const top=mix3(A.top,B.top,tt);
   const mid=mix3(A.mid,B.mid,tt);
   const low=mix3(A.low,B.low,tt);
   const ink=mix3(A.ink,B.ink,tt);
-  // tiny temperature tilt (very subtle)
   const warm=(q-0.5)*0.045;
   return {
-    top: mix3(top,[255,255,255],0.010+warm),
-    mid: mix3(mid,[255,255,255],0.008+warm*0.7),
-    low: mix3(low,ink,0.058),
+    top:mix3(top,[255,255,255],0.010+warm),
+    mid:mix3(mid,[255,255,255],0.008+warm*0.7),
+    low:mix3(low,ink,0.058),
     ink
   };
 }
 
-// ---------- high-quality dithering (banding killer, but invisible) ----------
-const gN=192;
-const gC=document.createElement("canvas"); gC.width=gC.height=gN;
-const gtx=gC.getContext("2d",{alpha:true});
-(function buildBlueishNoise(){
-  // not true blue-noise, but: decorrelated tiny noise, no grid, no obvious grain
-  const im=gtx.createImageData(gN,gN), d=im.data;
-  let s=0xA123B45C>>>0;
-  const rnd=()=>((s=(s*1664525+1013904223)>>>0)&0xfffffff)/0xfffffff;
-  for(let i=0;i<d.length;i+=4){
-    const r=rnd();
-    const v=r<0.5? r*r : 1-(1-r)*(1-r);
-    const a=clamp(6+Math.abs(v-0.5)*20,5,26);
-    d[i]=255; d[i+1]=255; d[i+2]=255; d[i+3]=a;
-  }
-  gtx.putImageData(im,0,0);
-})();
-
-function drawDither(t){
-  // extremely light; animated subpixel drift prevents static pattern reading
-  ctx.save();
-  ctx.globalCompositeOperation="overlay";
-  ctx.globalAlpha=0.030*(0.90+0.10*slow01(t,0.0042,31));
-  const ox=(slow01(t,0.010,41)-0.5)*10, oy=(slow01(t,0.012,42)-0.5)*10;
-  ctx.translate(ox,oy);
-  // tile manually to avoid createPattern quirks and avoid seams
-  for(let y=-gN;y<H+gN;y+=gN){
-    for(let x=-gN;x<W+gN;x+=gN){
-      ctx.drawImage(gC,x,y);
-    }
-  }
-  ctx.restore();
-}
-
-// ---------- ambient field rendering ----------
 function drawAmbient(t){
   const P=paletteAt(t);
+  const breathe=1+(slow01(t*SPEED,0.003,3)-0.5)*0.016;
 
-  // breathing: tiny, non-rhythmic, minutes-scale
-  const breathe = 1 + (slow01(t,0.0030,3)-0.5)*0.016; // ±0.8%
-  const micro   = (slow01(t,0.0016,4)-0.5)*0.010;     // tiny lift
+  const gx=W*(0.48+(slow01(t*SPEED,0.0011,5)-0.5)*0.09);
+  const gy=H*(0.50+(slow01(t*SPEED,0.0013,6)-0.5)*0.09);
 
-  // base radial field (no readable direction)
-  const gx=W*(0.48 + (slow01(t,0.0011,5)-0.5)*0.09);
-  const gy=H*(0.50 + (slow01(t,0.0013,6)-0.5)*0.09);
-
-  ctx.fillStyle="#000"; ctx.fillRect(0,0,W,H);
-
-  // Base: very soft radial + vertical bias (like air depth)
-  const base=ctx.createRadialGradient(gx,gy, Math.min(W,H)*0.07, gx,gy, Math.max(W,H)*0.98);
-  base.addColorStop(0, rgb(mix3(P.top,[255,255,255],0.012+micro), 1));
-  base.addColorStop(0.46, rgb(P.mid, 1));
-  base.addColorStop(1, rgb(P.low, 1));
+  const base=ctx.createRadialGradient(
+    gx,gy,Math.min(W,H)*0.07,
+    gx,gy,Math.max(W,H)*0.98
+  );
+  base.addColorStop(0,rgb(P.top));
+  base.addColorStop(0.46,rgb(P.mid));
+  base.addColorStop(1,rgb(P.low));
   ctx.fillStyle=base;
   ctx.fillRect(0,0,W,H);
 
-  // Subtle vertical “air” layer (no banding; helps hotel-space feel)
-  ctx.save();
+  // weight fields (更容易观察）
   ctx.globalCompositeOperation="soft-light";
-  const air=ctx.createLinearGradient(0,0,0,H);
-  air.addColorStop(0, rgb([255,252,248], 0.14*breathe));
-  air.addColorStop(0.55, "rgba(255,255,255,0)");
-  air.addColorStop(1, rgb([0,0,0], 0.06*breathe));
-  ctx.fillStyle=air; ctx.fillRect(0,0,W,H);
-  ctx.restore();
-
-  // Weight fields: 4 nodes, extremely soft, independent drift, no sweep
-  const nodes=[
-    {u:0.62,v:0.42,r:0.62,a:0.20,s:7,  col:[255,248,238]},
-    {u:0.27,v:0.24,r:0.48,a:0.13,s:11, col:[255,234,214]},
-    {u:0.53,v:0.84,r:0.72,a:0.10,s:17, col:[255,242,228]},
-    {u:0.86,v:0.58,r:0.55,a:0.08,s:23, col:[255,238,220]},
-  ];
-
-  ctx.save();
-  ctx.globalCompositeOperation="soft-light";
-  for(const n of nodes){
-    const du=(slow01(t,0.0010,n.s)-0.5)*0.07;
-    const dv=(slow01(t,0.0012,n.s+1)-0.5)*0.07;
-    const cx=W*clamp(n.u+du,0,1), cy=H*clamp(n.v+dv,0,1);
-    const r=Math.max(W,H)*n.r*(0.965+0.035*slow01(t,0.0014,n.s+2));
-    const a=n.a*breathe;
-
+  [
+    [0.62,0.42,0.62,7],
+    [0.27,0.24,0.48,11],
+    [0.53,0.84,0.72,17],
+  ].forEach(n=>{
+    const du=(slow01(t*SPEED,0.001,n[3])-0.5)*0.07;
+    const dv=(slow01(t*SPEED,0.0012,n[3]+1)-0.5)*0.07;
+    const cx=W*(n[0]+du), cy=H*(n[1]+dv);
+    const r=Math.max(W,H)*n[2]*(0.95+0.05*breathe);
     const g=ctx.createRadialGradient(cx,cy,0,cx,cy,r);
-    g.addColorStop(0, rgb(n.col, 0.18*a));
-    g.addColorStop(0.42, rgb(n.col, 0.08*a));
-    g.addColorStop(1, "rgba(255,255,255,0)");
-    ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
-  }
-  ctx.restore();
-
-  // Shadow sculpt: “cashmere dark”, no corners dirty, no blocks
-  ctx.save();
-  ctx.globalCompositeOperation="multiply";
-  const ax=(slow01(t,0.0008,21)-0.5), ay=(slow01(t,0.0010,22)-0.5);
-  const sx=W*(0.5-ax*0.24), sy=H*(0.52-ay*0.18);
-  const sg=ctx.createRadialGradient(sx,sy, Math.min(W,H)*0.10, sx,sy, Math.max(W,H)*0.98);
-  sg.addColorStop(0,"rgba(0,0,0,0)");
-  sg.addColorStop(1,`rgba(0,0,0,${0.070*breathe})`);
-  ctx.fillStyle=sg; ctx.fillRect(0,0,W,H);
-  ctx.restore();
-
-  // Micro “finish”: barely-there highlight rolloff to avoid plastic flatness
-  ctx.save();
-  ctx.globalCompositeOperation="overlay";
-  ctx.globalAlpha=0.045*(0.85+0.15*slow01(t,0.0022,55));
-  const hx=W*(0.50 + (slow01(t,0.0016,56)-0.5)*0.10);
-  const hy=H*(0.50 + (slow01(t,0.0014,57)-0.5)*0.10);
-  const hg=ctx.createRadialGradient(hx,hy,0,hx,hy, Math.max(W,H)*0.75);
-  hg.addColorStop(0, "rgba(255,255,255,0.16)");
-  hg.addColorStop(0.55,"rgba(255,255,255,0.05)");
-  hg.addColorStop(1, "rgba(255,255,255,0)");
-  ctx.fillStyle=hg; ctx.fillRect(0,0,W,H);
-  ctx.restore();
-
-  // Banding killer (invisible)
-  drawDither(t);
+    g.addColorStop(0,"rgba(255,240,220,0.22)");
+    g.addColorStop(0.45,"rgba(255,240,220,0.08)");
+    g.addColorStop(1,"rgba(255,255,255,0)");
+    ctx.fillStyle=g;
+    ctx.fillRect(0,0,W,H);
+  });
+  ctx.globalCompositeOperation="source-over";
 }
 
-// ---------- loop ----------
-let t0=performance.now(), last=t0;
+let t0=performance.now();
 function tick(now){
   requestAnimationFrame(tick);
   const t=(now-t0)*0.001;
   drawAmbient(t);
 }
 requestAnimationFrame(tick);
-
-// iOS: stabilize time after backgrounding
-document.addEventListener("visibilitychange",()=>{
-  if(!document.hidden){
-    const n=performance.now();
-    t0 += (n-last);
-    last=n;
-  }
-},{passive:true});
-
-}catch(e){showErr(e);}
 })();
 </script>
