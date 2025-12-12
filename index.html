@@ -1,280 +1,188 @@
 <!doctype html><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
-<title>Neon Rift X (iOS Interaction Fixed)</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Trinity Neon Background</title>
 <style>
-html,body{margin:0;height:100%;background:#05060a;overflow:hidden;overscroll-behavior:none;
-font:12px ui-monospace,Menlo,Consolas,monospace;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
-#ui{position:fixed;inset:12px 12px auto 12px;z-index:9;display:flex;gap:10px;align-items:center;color:#d7e3ff;mix-blend-mode:screen;pointer-events:none}
+html,body{margin:0;height:100%;background:#06070b;overflow:hidden;font:12px ui-monospace,Menlo,Consolas,monospace}
+#c{position:fixed;inset:0;display:block}
+#ui{position:fixed;left:12px;right:12px;top:12px;z-index:9;display:flex;gap:10px;align-items:center;justify-content:space-between;
+padding-top:env(safe-area-inset-top);pointer-events:none}
 #pill{flex:1;min-width:0;padding:10px 12px;border-radius:14px;border:1px solid #7af5;background:linear-gradient(90deg,#1a2bff22,#ff2bd722);
-backdrop-filter:blur(12px);box-shadow:0 0 0 1px #fff1 inset,0 14px 40px #000b;text-shadow:0 0 14px #7af,0 0 30px #f0f}
+backdrop-filter:blur(12px);box-shadow:0 0 0 1px #fff1 inset,0 14px 40px #000b;color:#d7e3ff;mix-blend-mode:screen;
+text-shadow:0 0 14px #7af,0 0 30px #f0f}
 #pill b{color:#fff}#pill small{display:block;opacity:.85;margin-top:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-#btn{pointer-events:auto;padding:10px 12px;border-radius:14px;border:1px solid #fff2;background:#0006;color:#fff;backdrop-filter:blur(12px)}
-#btn:active{transform:translateY(1px)}
+.btn{pointer-events:auto;padding:10px 12px;border-radius:14px;border:1px solid #fff2;background:#0006;color:#fff;backdrop-filter:blur(12px);
+box-shadow:0 0 0 1px #fff1 inset}
+.btn:active{transform:translateY(1px)}
 body:before{content:"";position:fixed;inset:-60px;pointer-events:none;background:
 repeating-linear-gradient(0deg,rgba(255,255,255,.045),rgba(255,255,255,.045) 1px,transparent 2px,transparent 5px);
-mix-blend-mode:overlay;opacity:.30;animation:scan 7s linear infinite}
+mix-blend-mode:overlay;opacity:.28;animation:scan 7s linear infinite}
 @keyframes scan{to{transform:translateY(60px)}}
-canvas{display:block;touch-action:none} /* 关键：iOS 仍需 preventDefault 兜底 */
 </style>
 
-<div id=ui><div id=pill><b>NEON RIFT X</b> · <span id=s>loading…</span>
-<small>单指=涡旋 · 双指=缩放+平移 · BOOM=震荡（iOS Safari 修复版）</small></div><button id=btn>BOOM</button></div>
+<canvas id="c"></canvas>
+<div id="ui">
+  <div id="pill"><b>TRINITY NEON</b> · <span id="s">mode 1</span>
+    <small>每分钟自动切换 · 只显示当前模式按钮（点一下切到下一套）</small>
+  </div>
+  <button id="b1" class="btn">BUTTON 1</button>
+  <button id="b2" class="btn" style="display:none">BUTTON 2</button>
+  <button id="b3" class="btn" style="display:none">BUTTON 3</button>
+</div>
 
-<script type="module">
-import * as THREE from "https://unpkg.com/three@0.161.0/build/three.module.js";
-import { EffectComposer } from "https://unpkg.com/three@0.161.0/examples/jsm/postprocessing/EffectComposer.js";
-import { RenderPass } from "https://unpkg.com/three@0.161.0/examples/jsm/postprocessing/RenderPass.js";
-import { ShaderPass } from "https://unpkg.com/three@0.161.0/examples/jsm/postprocessing/ShaderPass.js";
-import { AfterimagePass } from "https://unpkg.com/three@0.161.0/examples/jsm/postprocessing/AfterimagePass.js";
-import { UnrealBloomPass } from "https://unpkg.com/three@0.161.0/examples/jsm/postprocessing/UnrealBloomPass.js";
-import { GlitchPass } from "https://unpkg.com/three@0.161.0/examples/jsm/postprocessing/GlitchPass.js";
-import { FilmPass } from "https://unpkg.com/three@0.161.0/examples/jsm/postprocessing/FilmPass.js";
-import { RGBShiftShader } from "https://unpkg.com/three@0.161.0/examples/jsm/shaders/RGBShiftShader.js";
-
-const S=document.getElementById("s"),BTN=document.getElementById("btn");
+<script>
+(()=>{ "use strict";
+const c=document.getElementById("c"),C=c.getContext("2d",{alpha:false}),S=document.getElementById("s");
+const b1=document.getElementById("b1"),b2=document.getElementById("b2"),b3=document.getElementById("b3");
+const clamp=(x,a,b)=>x<a?a:x>b?b:x, TAU=Math.PI*2;
 const mobile=matchMedia("(pointer:coarse)").matches||innerWidth<760;
-const clamp=(x,a,b)=>x<a?a:x>b?b:x;
-const isIOS=/iPad|iPhone|iPod/.test(navigator.userAgent);
 
-let DPR=clamp(devicePixelRatio||1,1,mobile?1.55:1.8),W=innerWidth,H=innerHeight;
-let zoom=1,panx=0,pany=0,boom=0,md=0,t=0,px=0,py=0,quality=1,ema=60;
+// 低分辨率“伪shader”画布（再放大）：iOS 更稳也更省
+const oc=document.createElement("canvas"),O=oc.getContext("2d",{alpha:false});
+let W=0,H=0,dpr=1,res=mobile?240:300,mode=0,boom=0,t=0,last=performance.now(),ema=60;
+let timer=null;
 
-const r=new THREE.WebGLRenderer({antialias:false,alpha:false,powerPreference:"high-performance"});
-r.setClearColor(0x05060a,1);r.setPixelRatio(DPR);r.setSize(W,H);
-r.domElement.style.touchAction="none"; // 关键：绑在 canvas
-document.body.appendChild(r.domElement);
-
-const scene=new THREE.Scene();
-const cam=new THREE.PerspectiveCamera(55,W/H,0.01,30);cam.position.set(0,0,2.3);
-
-/* 背景 shader */
-const bg=new THREE.Mesh(new THREE.PlaneGeometry(2,2),
-new THREE.ShaderMaterial({
-  depthWrite:false,depthTest:false,
-  uniforms:{R:{value:new THREE.Vector2(W*DPR,H*DPR)},T:{value:0},M:{value:new THREE.Vector2(0,0)},Z:{value:1},P:{value:new THREE.Vector2(0,0)},B:{value:0}},
-  vertexShader:`varying vec2 vUv;void main(){vUv=uv;gl_Position=vec4(position,1.0);}`,
-  fragmentShader:`precision highp float;varying vec2 vUv;uniform vec2 R;uniform float T;uniform vec2 M;uniform float Z;uniform vec2 P;uniform float B;
-float h(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453123);}
-float n(vec2 p){vec2 i=floor(p),f=fract(p);vec2 u=f*f*(3.0-2.0*f);
-return mix(mix(h(i),h(i+vec2(1,0)),u.x),mix(h(i+vec2(0,1)),h(i+vec2(1,1)),u.x),u.y);}
-float fbm(vec2 p){float f=0.,a=.5;for(int i=0;i<5;i++){f+=a*n(p);p*=2.;a*=.5;}return f;}
-void main(){
-  vec2 uv=(gl_FragCoord.xy-0.5*R)/R.y; uv*=Z; uv-=P;
-  float d=length(uv-M*0.9)+1e-4; float w=exp(-d*3.2);
-  float a=atan(uv.y,uv.x),r=length(uv);
-  float z=fbm(uv*2.8+vec2(T*.06,-T*.04));
-  float z2=fbm(uv*4.2-vec2(T*.04,T*.02));
-  float rip=sin(r*10.-T*2.0 + B*8.)*0.10;
-  vec3 col=vec3(.03,.06,.14);
-  col += vec3(.10,.35,.95)*(0.2+0.8*z);
-  col += vec3(.95,.10,.85)*(0.2+0.8*z2);
-  col += w*vec3(.25,.8,1.25);
-  col += (0.5+0.5*sin(a*6.+T*0.9))*0.05;
-  col += rip*vec3(.2,.6,1.0);
-  col *= 1.0 + B*0.25;
-  gl_FragColor=vec4(col,1.0);
-}`}));
-bg.frustumCulled=false;scene.add(bg);
-
-/* 粒子 */
-let count=mobile?60000:90000;
-let pos=new Float32Array(count*3),vel=new Float32Array(count*2),hue=new Float32Array(count);
-for(let i=0;i<count;i++){pos[i*3]=Math.random()*2-1;pos[i*3+1]=Math.random()*2-1;pos[i*3+2]=0;vel[i*2]=vel[i*2+1]=0;hue[i]=Math.random();}
-const geom=new THREE.BufferGeometry();
-geom.setAttribute("position",new THREE.BufferAttribute(pos,3));
-geom.setAttribute("aHue",new THREE.BufferAttribute(hue,1));
-const mat=new THREE.ShaderMaterial({
-  transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,
-  uniforms:{T:{value:0},Z:{value:1},P:{value:new THREE.Vector2(0,0)},M:{value:new THREE.Vector2(0,0)},B:{value:0}},
-  vertexShader:`uniform float T;uniform float Z;uniform vec2 P;uniform vec2 M;uniform float B;
-attribute float aHue;varying float vHue;varying float vA;
-void main(){
-  vec3 p=position; p.xy/=Z; p.xy+=P;
-  vec2 d=p.xy-(M*0.35); float r=dot(d,d)+1e-3; float inv=inversesqrt(r);
-  float sz=(2.0 + 10.0*(0.5+0.5*sin(aHue*6.283+T*1.6)) + B*9.0) / Z;
-  vHue=aHue; vA=clamp(0.12+inv*0.12,0.10,0.65);
-  gl_Position=projectionMatrix*modelViewMatrix*vec4(p,1.0);
-  gl_PointSize=sz;
-}`,
-  fragmentShader:`precision highp float;uniform float T;uniform float B;varying float vHue;varying float vA;
-vec3 hsv2rgb(vec3 c){vec4 K=vec4(1.,2./3.,1./3.,3.);vec3 p=abs(fract(c.xxx+K.xyz)*6.-K.www);return c.z*mix(K.xxx,clamp(p-K.xxx,0.,1.),c.y);}
-void main(){
-  vec2 uv=gl_PointCoord*2.-1.; float d=dot(uv,uv);
-  float a=exp(-d*2.6);
-  vec3 col=hsv2rgb(vec3(fract(vHue+T*0.02),1.,1.));
-  col=mix(col,vec3(.55,.85,1.2),0.35);
-  col*=1.0+B*0.35;
-  gl_FragColor=vec4(col,a*vA);
-}`});
-scene.add(new THREE.Points(geom,mat));
-
-/* 后处理 */
-const composer=new EffectComposer(r);
-composer.addPass(new RenderPass(scene,cam));
-const bloom=new UnrealBloomPass(new THREE.Vector2(W,H),1.2,0.7,0.05); composer.addPass(bloom);
-const after=new AfterimagePass(0.88); composer.addPass(after);
-const rgb=new ShaderPass(RGBShiftShader); rgb.uniforms["amount"].value=0.0016; composer.addPass(rgb);
-const film=new FilmPass(0.35,0.5,720,false); composer.addPass(film);
-const glitch=new GlitchPass(); composer.addPass(glitch);
-
-/* iOS：强制阻断浏览器手势（关键） */
-function hardBlockNativeGestures(el){
-  // iOS Safari 特别吃这一套：必须 passive:false + preventDefault
-  ["touchstart","touchmove","touchend","touchcancel"].forEach(type=>{
-    el.addEventListener(type,e=>{
-      if(e.touches && e.touches.length>=2) e.preventDefault(); // 双指一律阻止页面缩放/滚动
-    },{passive:false});
-  });
-  // iOS 旧“gesture*”事件（有些版本仍会触发）
-  ["gesturestart","gesturechange","gestureend"].forEach(type=>{
-    el.addEventListener(type,e=>e.preventDefault(),{passive:false});
-  });
-}
-hardBlockNativeGestures(r.domElement);
-
-/* 互动：以 TouchEvents 为主（iOS 稳），Pointer 作为非 iOS 补充 */
-let touchMode=0, pinch0=0, zoom0=1, pan0x=0, pan0y=0, cx0=0, cy0=0;
-
-function setM(cx,cy){px=(cx/innerWidth-.5)*1.6;py=(cy/innerHeight-.5)*1.6}
-function dist2(a,b){let dx=a.clientX-b.clientX,dy=a.clientY-b.clientY;return Math.hypot(dx,dy)}
-function center2(a,b){return {x:(a.clientX+b.clientX)/2,y:(a.clientY+b.clientY)/2}}
-
-function onTouchStart(e){
-  if(e.touches.length===1){touchMode=1;md=1;setM(e.touches[0].clientX,e.touches[0].clientY)}
-  else if(e.touches.length===2){
-    touchMode=2;md=0;
-    pinch0=dist2(e.touches[0],e.touches[1]); zoom0=zoom;
-    pan0x=panx; pan0y=pany;
-    const c=center2(e.touches[0],e.touches[1]); cx0=c.x; cy0=c.y;
-  }
-}
-function onTouchMove(e){
-  if(touchMode===1 && e.touches.length===1){
-    setM(e.touches[0].clientX,e.touches[0].clientY);
-  }else if(touchMode===2 && e.touches.length===2){
-    const d=dist2(e.touches[0],e.touches[1])||pinch0;
-    zoom=clamp(zoom0*(d/pinch0),.55,2.7);
-    const c=center2(e.touches[0],e.touches[1]);
-    panx=pan0x+((c.x-cx0)/innerWidth)*1.6;
-    pany=pan0y+((c.y-cy0)/innerHeight)*1.6;
-  }
-}
-function onTouchEnd(e){
-  if(e.touches.length===0){touchMode=0;md=0}
-  else if(e.touches.length===1){touchMode=1;md=1;setM(e.touches[0].clientX,e.touches[0].clientY)}
-}
-
-r.domElement.addEventListener("touchstart",onTouchStart,{passive:false});
-r.domElement.addEventListener("touchmove",onTouchMove,{passive:false});
-r.domElement.addEventListener("touchend",onTouchEnd,{passive:false});
-r.domElement.addEventListener("touchcancel",onTouchEnd,{passive:false});
-
-/* 非 iOS：Pointer 补充（可用但不强依赖） */
-if(!isIOS){
-  let touches=new Map(),pinchP=0,zoomP=1,panP=[0,0],centP=[0,0];
-  const dist=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y),center=(a,b)=>({x:(a.x+b.x)/2,y:(a.y+b.y)/2});
-  r.domElement.addEventListener("pointerdown",e=>{
-    r.domElement.setPointerCapture(e.pointerId);
-    touches.set(e.pointerId,{x:e.clientX,y:e.clientY});
-    md=touches.size===1;
-    if(touches.size===1)setM(e.clientX,e.clientY);
-    if(touches.size===2){
-      let [p1,p2]=[...touches.values()];pinchP=dist(p1,p2);zoomP=zoom;panP=[panx,pany];
-      let ce=center(p1,p2);centP=[ce.x,ce.y];
-    }
-  });
-  r.domElement.addEventListener("pointermove",e=>{
-    if(!touches.has(e.pointerId))return;
-    let p=touches.get(e.pointerId);p.x=e.clientX;p.y=e.clientY;
-    if(touches.size===1){let q=[...touches.values()][0];setM(q.x,q.y)}
-    else if(touches.size===2){
-      let [p1,p2]=[...touches.values()],d=dist(p1,p2);
-      zoom=clamp(zoomP*(d/(pinchP||d)),.55,2.7);
-      let ce=center(p1,p2);
-      panx=panP[0]+((ce.x-centP[0])/innerWidth)*1.6;
-      pany=panP[1]+((ce.y-centP[1])/innerHeight)*1.6;
-    }
-  });
-  r.domElement.addEventListener("pointerup",e=>{touches.delete(e.pointerId);md=touches.size===1;});
-  r.domElement.addEventListener("pointercancel",()=>{touches.clear();md=0;});
-}
-
-addEventListener("wheel",e=>{zoom=clamp(zoom*(e.deltaY>0?1.08:.92),.55,2.7)},{passive:true});
-
-/* BOOM + iOS 音频手势 */
-let AC;const beep=(k=1)=>{try{AC||(AC=new (window.AudioContext||window.webkitAudioContext)());
-const o=AC.createOscillator(),g=AC.createGain();o.type="sawtooth";o.frequency.value=160+Math.random()*240;
-g.gain.setValueAtTime(0.0001,AC.currentTime);g.gain.exponentialRampToValueAtTime(0.10*k,AC.currentTime+.01);
-g.gain.exponentialRampToValueAtTime(0.0001,AC.currentTime+.22);o.connect(g);g.connect(AC.destination);o.start();o.stop(AC.currentTime+.24);}catch(e){}};
-const boomNow=()=>{boom=1;beep(1.25)}; BTN.addEventListener("click",boomNow);
-
-function onResize(){
+function resize(){
+  dpr=clamp(devicePixelRatio||1,1,mobile?1.6:2.0);
   W=innerWidth;H=innerHeight;
-  DPR=clamp(devicePixelRatio||1,1,mobile?1.55:1.8);
-  r.setPixelRatio(DPR);r.setSize(W,H);composer.setSize(W,H);
-  cam.aspect=W/H;cam.updateProjectionMatrix();
-  bg.material.uniforms.R.value.set(W*DPR,H*DPR);
-  bloom.setSize(W,H);
+  c.width=W*dpr; c.height=H*dpr;
+  // 根据屏幕大小动态选采样分辨率（越大越精致，但会更耗）
+  res=clamp((Math.min(W,H)*(mobile?0.55:0.7))|0,200,380);
+  oc.width=res; oc.height=res;
 }
-addEventListener("resize",onResize);onResize();
+addEventListener("resize",resize,{passive:true}); resize();
 
-/* 性能自适应 */
-let last=performance.now(),frame=0;
-function adapt(dt){
-  const fps=1000/dt; ema=ema*0.92+fps*0.08;
-  if(ema<55 && quality>0.65) quality-=0.03;
-  if(ema<45 && quality>0.50) quality-=0.06;
-  if(ema>58 && quality<1.0) quality+=0.01;
-  quality=clamp(quality,0.5,1);
-  const target=clamp((mobile?1.45:1.85)*quality,0.9,mobile?1.55:1.8);
-  const cur=r.getPixelRatio();
-  if(Math.abs(cur-target)>0.10){r.setPixelRatio(target);composer.setSize(W,H);bg.material.uniforms.R.value.set(W*target,H*target);}
-  bloom.strength=1.0*(0.65+0.35*quality)+boom*0.9;
-  bloom.radius=0.35+0.45*(1-quality);
-  after.uniforms["damp"].value=0.86+0.10*quality;
-  rgb.uniforms["amount"].value=0.0013*(1+boom*1.4)*(0.8+0.5*(1-quality));
-  glitch.enabled = (quality>0.62) || boom>0.2;
-  film.uniforms["nIntensity"].value=0.25+0.25*(1-quality);
-  film.uniforms["sIntensity"].value=0.35+boom*0.35;
+function showButtons(){
+  b1.style.display=mode===0?"":"none";
+  b2.style.display=mode===1?"":"none";
+  b3.style.display=mode===2?"":"none";
+  S.textContent="mode "+(mode+1);
+}
+showButtons();
+
+function resetMinuteAuto(){
+  if(timer) clearInterval(timer);
+  timer=setInterval(()=>setMode((mode+1)%3,false),60*1000);
+}
+resetMinuteAuto();
+
+function setMode(m,manual=true){
+  mode=m|0; boom=1; showButtons();
+  if(manual) resetMinuteAuto();
 }
 
-/* 粒子更新：时间分片 */
-function step(now){
-  const dt=now-last;last=now;
-  t+=dt*0.001*(1+(boom?2.2:0));
-  boom&&=(boom*=0.88)<0.02?0:boom;
+// 少量按钮交互：每套只显示自己的按钮，点一下切到下一套
+b1.onclick=()=>setMode(1,true);
+b2.onclick=()=>setMode(2,true);
+b3.onclick=()=>setMode(0,true);
 
-  const stride=Math.floor(2+6*(1-quality));
-  const start=(frame++%stride);
-  const pullBase=(md?0.030:0.012)*(1+boom*2.0), rotBase=0.070*(md?1.5:1.0)*(1+boom*1.0);
-  const mx=px-panx,my=py-pany;
+// 颜色工具
+function hsv(h,s,v){
+  h=(h%1+1)%1;
+  let i=(h*6)|0,f=h*6-i,p=v*(1-s),q=v*(1-f*s),t=v*(1-(1-f)*s);
+  switch(i%6){case 0:return [v,t,p];case 1:return [q,v,p];case 2:return [p,v,t];
+    case 3:return [p,q,v];case 4:return [t,p,v];default:return [v,p,q];}
+}
 
-  for(let i=start;i<count;i+=stride){
-    const ix=i*3,iv=i*2;
-    let x=pos[ix],y=pos[ix+1],dx=x-mx*0.35,dy=y-my*0.35;
-    let rr=dx*dx+dy*dy+1e-3,inv=1/Math.sqrt(rr);
-    let vx=vel[iv],vy=vel[iv+1];
-    const pull=pullBase*inv,rot=rotBase*inv;
-    vx+=(-dx*pull - dy*rot); vy+=(-dy*pull + dx*rot);
-    const h=hue[i];
-    vx+=Math.sin((y*3+t*0.7)+h*9)*0.0006; vy+=Math.cos((x*3-t*0.6)+h*9)*0.0006;
-    vx*=0.985; vy*=0.985;
-    x+=vx; y+=vy;
-    if(x>1.2)x=-1.2;if(x<-1.2)x=1.2;if(y>1.2)y=-1.2;if(y<-1.2)y=1.2;
-    pos[ix]=x;pos[ix+1]=y;vel[iv]=vx;vel[iv+1]=vy;
+// 三套背景：每帧生成 res*res 的像素，再放大 + 后处理
+function renderMode0(tt){ // Neon Vortex
+  const img=O.getImageData(0,0,res,res),d=img.data;
+  let i=0; for(let y=0;y<res;y++){let v=y/(res-1)*2-1;
+    for(let x=0;x<res;x++){
+      let u=x/(res-1)*2-1;
+      let r=Math.hypot(u,v),a=Math.atan2(v,u);
+      let w=Math.exp(-r*2.8);
+      let z=Math.sin(r*10-tt*2.0)+Math.sin(a*6+tt*0.9)+Math.cos(u*4-tt*0.6)*0.6;
+      z=(z+2.6)/5.2;
+      let h=0.62+0.22*z+0.05*Math.sin(tt*0.2);
+      let rgb=hsv(h,1,0.22+0.85*(0.15+0.85*z)+w*0.35+boom*0.12);
+      d[i++]=(rgb[0]*255)|0; d[i++]=(rgb[1]*255)|0; d[i++]=(rgb[2]*255)|0; d[i++]=255;
+  }}
+  O.putImageData(img,0,0);
+}
+function renderMode1(tt){ // Aurora + Mist
+  const img=O.getImageData(0,0,res,res),d=img.data;
+  let i=0; for(let y=0;y<res;y++){let v=y/(res-1);
+    for(let x=0;x<res;x++){
+      let u=x/(res-1);
+      let X=(u-0.5)*2, Y=(v-0.5)*2;
+      let band=Math.sin((X*1.2+tt*0.12)*3)+Math.cos((Y*1.6-tt*0.10)*2.2);
+      let aur=Math.sin((Y*2.2+Math.sin(tt*0.2)*0.4)*6+tt*0.9+band*1.4);
+      let fog=Math.exp(-Math.abs(Y)*1.8)*(0.35+0.65*Math.sin(tt*0.25+X*2)*0.5+0.5);
+      let z=(aur*0.5+0.5); z=z*z;
+      let h=0.43+0.18*z+0.02*Math.sin(tt*0.15);
+      let v1=0.12+0.95*(z*0.9+fog*0.35)+boom*0.12;
+      let rgb=hsv(h,0.95,v1);
+      // 冷暖边缘
+      let edge=Math.exp(-Math.abs(X)*2.2)*0.10;
+      d[i++]=((rgb[0]+edge)*255)|0; d[i++]=((rgb[1]+edge*0.7)*255)|0; d[i++]=((rgb[2]+edge*1.4)*255)|0; d[i++]=255;
+  }}
+  O.putImageData(img,0,0);
+}
+function renderMode2(tt){ // Star Warp + Fractal Pulse
+  const img=O.getImageData(0,0,res,res),d=img.data;
+  let i=0; for(let y=0;y<res;y++){let v=y/(res-1)*2-1;
+    for(let x=0;x<res;x++){
+      let u=x/(res-1)*2-1;
+      let r=Math.hypot(u,v)+1e-4, a=Math.atan2(v,u);
+      // 旋涡分形感
+      let k=Math.sin(a*5+tt*0.8)+Math.cos(r*8-tt*1.6);
+      let f=Math.sin((u*k+tt*0.12)*5)+Math.cos((v-k-tt*0.1)*4);
+      let z=(f+2)/4; z=z*z;
+      // 星点：用 hash-like 的格点闪烁
+      let sx=((u*0.5+0.5)*res)|0, sy=((v*0.5+0.5)*res)|0;
+      let hsh=Math.sin((sx*12.9898+sy*78.233))*43758.5453; hsh=hsh-Math.floor(hsh);
+      let star=(hsh>0.996?1:0)* (0.55+0.45*Math.sin(tt*6+hsh*9));
+      let warp=Math.exp(-r*1.7)*(0.25+0.75*(0.5+0.5*Math.sin(tt*1.1-r*14)));
+      let base=0.08+0.85*(z*0.7+warp*0.55)+star*0.9+boom*0.14;
+      let h=0.80-0.25*z;
+      let rgb=hsv(h,1,base);
+      d[i++]=(rgb[0]*255)|0; d[i++]=(rgb[1]*255)|0; d[i++]=(rgb[2]*255)|0; d[i++]=255;
+  }}
+  O.putImageData(img,0,0);
+}
+
+function draw(now){
+  requestAnimationFrame(draw);
+  const dt=now-last; last=now;
+  const fps=1000/(dt||16.7); ema=ema*0.92+fps*0.08;
+
+  t+=dt*0.001*(1+(boom?1.8:0)); boom&&=(boom*=0.88)<0.02?0:boom;
+
+  // 质量自适应：iOS 上也尽量稳（只调 res，不动 canvas 尺寸）
+  if(ema<52 && res>210){res=(res*0.97)|0; oc.width=oc.height=res;}
+  if(ema>58 && res<(mobile?300:380)){res=(res*1.01)|0; oc.width=oc.height=res;}
+
+  if(mode===0) renderMode0(t);
+  else if(mode===1) renderMode1(t);
+  else renderMode2(t);
+
+  // 主画布：放大 + “伪 bloom/余晖/轻微故障”
+  C.setTransform(dpr,0,0,dpr,0,0);
+  C.imageSmoothingEnabled=true;
+  C.globalCompositeOperation="source-over";
+  C.drawImage(oc,0,0,W,H);
+
+  // Bloom：叠加两次模糊（iOS 支持 canvas filter）
+  C.globalCompositeOperation="screen";
+  C.globalAlpha=0.26+(boom?0.10:0);
+  C.filter="blur(10px)";
+  C.drawImage(c,0,0,W*dpr,H*dpr,0,0,W,H);
+  C.filter="blur(24px)";
+  C.globalAlpha=0.16+(boom?0.08:0);
+  C.drawImage(c,0,0,W*dpr,H*dpr,0,0,W,H);
+  C.filter="none";
+  C.globalAlpha=1;
+
+  // 轻微故障抖动（很克制，避免 iOS 发热）
+  if(((t*10)|0)%28===0){
+    C.globalAlpha=0.07;
+    C.drawImage(c,(Math.random()-.5)*10*dpr,(Math.random()-.5)*6*dpr);
+    C.globalAlpha=1;
   }
-  geom.attributes.position.needsUpdate=true;
 
-  bg.material.uniforms.T.value=t; bg.material.uniforms.M.value.set(px-panx,py-pany);
-  bg.material.uniforms.Z.value=zoom; bg.material.uniforms.P.value.set(panx,pany); bg.material.uniforms.B.value=boom;
-  mat.uniforms.T.value=t; mat.uniforms.M.value.set(px-panx,py-pany);
-  mat.uniforms.Z.value=zoom; mat.uniforms.P.value.set(panx,pany); mat.uniforms.B.value=boom;
-
-  adapt(dt);
-  composer.render();
-
-  if((frame&7)===0) S.textContent=`${isIOS?"iOS Safari":"browser"} · fps~${ema.toFixed(0)} · q=${quality.toFixed(2)} · dpr=${r.getPixelRatio().toFixed(2)} · z=${zoom.toFixed(2)} · pan=(${panx.toFixed(2)},${pany.toFixed(2)})`;
-  requestAnimationFrame(step);
+  // 状态文字（别太频繁更新）
+  if(((t*4)|0)%2===0) S.textContent=`mode ${mode+1} · fps~${ema.toFixed(0)} · res=${res}px · auto: 60s`;
 }
-requestAnimationFrame(step);
+requestAnimationFrame(draw);
+})();
 </script>
