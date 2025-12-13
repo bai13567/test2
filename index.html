@@ -1,175 +1,371 @@
 <!doctype html>
 <html lang="zh">
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
-  <title>Volumetric Clouds with Error Reporting</title>
-  <style>
-    html, body {
-      margin: 0;
-      height: 100%;
-      overflow: hidden;
-      background: #eef6ff;
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
+<title>Procedural Volumetric Clouds (No Textures, iOS Safari)</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#eef6ff}
+  canvas{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none}
+  #err{
+    position:fixed;left:12px;top:12px;right:12px;max-height:45vh;overflow:auto;
+    padding:10px 12px;border-radius:10px;display:none;
+    background:rgba(160,0,0,.88);color:#fff;font:12px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace;
+    z-index:9999;white-space:pre-wrap;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<pre id="err"></pre>
+
+<script>
+(()=> {
+  const c = document.getElementById("c");
+  const err = document.getElementById("err");
+  const gl = c.getContext("webgl", { antialias:false, alpha:false, depth:false, stencil:false, preserveDrawingBuffer:false });
+
+  function showErr(s){
+    err.style.display="block";
+    err.textContent = String(s||"Unknown error");
+  }
+  if(!gl){
+    const g=c.getContext("2d");
+    if(g){
+      g.fillStyle="#000"; g.font="16px system-ui";
+      g.fillText("WebGL not supported",20,30);
     }
-    canvas {
-      position: fixed;
-      inset: 0;
-      width: 100%;
-      height: 100%;
-      display: block;
-      touch-action: none;
+    return;
+  }
+
+  const V = `
+  attribute vec2 p;
+  void main(){ gl_Position = vec4(p,0.0,1.0); }`;
+
+  // 纯算法：3D value noise + fbm + 域扭曲 + 体积 raymarch + 单次散射近似
+  const F = `
+  precision highp float;
+  uniform vec2 r;
+  uniform float t;
+
+  // ---------- utils ----------
+  float sat(float x){ return clamp(x,0.0,1.0); }
+  vec3  sat3(vec3 x){ return clamp(x,0.0,1.0); }
+
+  // hash: 3D -> 1D (no textures)
+  float hash31(vec3 p){
+    // 稳定且便宜：避免过多 trig，但这里用 sin 仍然更“云”
+    return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453123);
+  }
+
+  float noise3(vec3 p){
+    vec3 i = floor(p);
+    vec3 f = fract(p);
+    f = f*f*(3.0-2.0*f);
+
+    float n000 = hash31(i + vec3(0,0,0));
+    float n100 = hash31(i + vec3(1,0,0));
+    float n010 = hash31(i + vec3(0,1,0));
+    float n110 = hash31(i + vec3(1,1,0));
+    float n001 = hash31(i + vec3(0,0,1));
+    float n101 = hash31(i + vec3(1,0,1));
+    float n011 = hash31(i + vec3(0,1,1));
+    float n111 = hash31(i + vec3(1,1,1));
+
+    float nx00 = mix(n000,n100,f.x);
+    float nx10 = mix(n010,n110,f.x);
+    float nx01 = mix(n001,n101,f.x);
+    float nx11 = mix(n011,n111,f.x);
+
+    float nxy0 = mix(nx00,nx10,f.y);
+    float nxy1 = mix(nx01,nx11,f.y);
+
+    return mix(nxy0,nxy1,f.z);
+  }
+
+  float fbm3(vec3 p){
+    float v = 0.0;
+    float a = 0.55;
+    // 5 层：移动端比较稳；想更细可以改 6，但 iOS 可能掉帧
+    for(int i=0;i<5;i++){
+      v += a * noise3(p);
+      p = p*2.02 + vec3(17.7, 9.2, 13.1);
+      a *= 0.52;
     }
-    #errorMessage {
-      position: fixed;
-      top: 20px;
-      left: 20px;
-      padding: 10px;
-      background-color: rgba(255, 0, 0, 0.8);
-      color: white;
-      font-size: 16px;
-      border-radius: 5px;
-      display: none;
-      z-index: 9999;
+    return v;
+  }
+
+  // Henyey-Greenstein phase (single scattering approx)
+  float phaseHG(float g, float cosTheta){
+    float g2 = g*g;
+    float denom = pow(1.0 + g2 - 2.0*g*cosTheta, 1.5);
+    // 1/(4π) ≈ 0.079577
+    return 0.079577 * (1.0 - g2) / max(denom, 1e-3);
+  }
+
+  // AABB intersect: returns (tmin,tmax), with tmin<=tmax; if no hit, tmin>tmax
+  vec2 rayBox(vec3 ro, vec3 rd, vec3 bmin, vec3 bmax){
+    vec3 inv = 1.0 / rd;
+    vec3 t0 = (bmin - ro) * inv;
+    vec3 t1 = (bmax - ro) * inv;
+    vec3 tsm = min(t0,t1);
+    vec3 tsM = max(t0,t1);
+    float tmin = max(max(tsm.x, tsm.y), tsm.z);
+    float tmax = min(min(tsM.x, tsM.y), tsM.z);
+    return vec2(tmin, tmax);
+  }
+
+  // ---------- cloud model ----------
+  // 结构：低频定形 + 高度分层 + 高频侵蚀
+  float cloudDensity(vec3 P, float time){
+    // 高度 h: 0..1
+    float h = sat((P.y - 0.0) / 1.2);
+
+    // 非线性时间演化：不是简单平移
+    float tt = time * 0.08;
+    float wobble = sin(tt*0.9) * 0.18 + sin(tt*0.37) * 0.12;
+
+    // 大形体坐标
+    vec3 Q = P * vec3(0.85, 1.15, 0.85);
+
+    // 域扭曲（让云团更“卷”）
+    vec3 W = vec3(
+      fbm3(Q + vec3(0.0, tt*0.35, 0.0)),
+      fbm3(Q + vec3(9.0, 0.0, tt*0.28)),
+      fbm3(Q + vec3(tt*0.22, 7.0, 0.0))
+    );
+    Q += 0.55*(W - 0.5) + vec3(wobble*0.15, 0.0, -wobble*0.08);
+
+    // 低频：决定“云团”
+    float base = fbm3(Q*0.95 + vec3(0.0, tt*0.12, tt*0.06));
+    base = smoothstep(0.42, 0.78, base);
+
+    // 高度分层：云底厚、云顶薄并更破碎
+    float bottom = smoothstep(0.00, 0.22, h);
+    float top    = 1.0 - smoothstep(0.65, 1.00, h);
+    float layer  = bottom * top;
+
+    // 高频侵蚀：只“啃边缘”，不破坏整体
+    float er = fbm3(Q*2.85 + vec3(3.2, tt*0.65, -tt*0.25));
+    float erosion = mix(0.15, 0.62, h);                 // 顶部侵蚀更强
+    float d = base*layer - erosion*(er*0.85);
+
+    // 软阈值：形成云的实体边界（积云感）
+    d = smoothstep(0.18, 0.62, d);
+
+    // 云底略更“实”
+    d *= mix(1.15, 0.92, h);
+
+    return sat(d);
+  }
+
+  // 环境天光：天顶更冷更亮，地平线偏暖
+  vec3 skyColor(vec2 uv){
+    float y = uv.y;
+    vec3 top = vec3(0.84, 0.92, 1.00);
+    vec3 mid = vec3(0.92, 0.96, 1.00);
+    vec3 bot = vec3(0.98, 0.985, 0.99);
+    float a = smoothstep(-0.2, 0.9, y);
+    vec3 c = mix(bot, mid, a);
+    c = mix(c, top, smoothstep(0.35, 1.05, y));
+    return c;
+  }
+
+  void main(){
+    vec2 uv = (gl_FragCoord.xy / r) * 2.0 - 1.0;
+    uv.x *= r.x / r.y;
+
+    float time = t;
+
+    // camera / ray
+    vec3 ro = vec3(0.0, 0.55, -2.6);
+    // 轻微俯仰，让云层占比更舒服
+    vec3 rd = normalize(vec3(uv.x, uv.y*0.85 + 0.05, 1.35));
+
+    // cloud volume box (AABB)
+    vec3 bmin = vec3(-3.2, 0.0, -1.0);
+    vec3 bmax = vec3( 3.2, 1.2,  3.8);
+
+    vec2 hit = rayBox(ro, rd, bmin, bmax);
+    float tmin = hit.x, tmax = hit.y;
+
+    // background
+    vec3 sky = skyColor(vec2(uv.x, uv.y));
+
+    // no hit -> sky only
+    if(tmax <= max(tmin, 0.0)){
+      gl_FragColor = vec4(sat3(pow(sky, vec3(0.98))), 1.0);
+      return;
     }
-  </style>
-  <canvas id="c"></canvas>
-  <div id="errorMessage"></div>
 
-  <script>
-    (() => {
-      // Initialize the canvas and WebGL context
-      const c = document.getElementById("c");
-      const errorMessageElement = document.getElementById("errorMessage");
+    tmin = max(tmin, 0.0);
 
-      // Create WebGL context
-      const gl = c.getContext("webgl", { antialias: true, alpha: false });
-      if (!gl) {
-        showErrorMessage("WebGL not supported.");
-        return;
+    // lighting setup
+    vec3 sunDir = normalize(vec3(0.55, 0.42, 0.72));
+    vec3 sunCol = vec3(1.00, 0.98, 0.92) * 1.10;
+    vec3 ambTop = vec3(0.70, 0.84, 1.00) * 0.55;
+    vec3 ambHor = vec3(1.00, 0.97, 0.92) * 0.25;
+
+    float g = 0.62; // forward scattering strength
+    float mu = dot(rd, sunDir);
+    float phase = phaseHG(g, mu);
+
+    // coefficients (tune here)
+    float sigmaA = 1.25; // absorption
+    float sigmaS = 1.10; // scattering
+
+    // raymarch
+    vec3 col = vec3(0.0);
+    float T = 1.0; // transmittance
+    float tc = tmin;
+
+    // 自适应步长范围：稀薄区域走大步、浓密区域走小步
+    float stepBig = 0.18;
+    float stepSmall = 0.07;
+
+    // 上限步数固定，实际靠 early-out/自适应减少平均计算
+    for(int i=0;i<48;i++){
+      if(tc > tmax || T < 0.02) break;
+
+      vec3 P = ro + rd * tc;
+
+      float d = cloudDensity(P, time);
+
+      // 早跳过：极低密度直接走大步
+      if(d < 0.02){
+        tc += stepBig;
+        continue;
       }
 
-      // Test WebGL capabilities
-      const glVersion = gl.getParameter(gl.VERSION);
-      console.log("WebGL Version: ", glVersion);
+      // 自适应步长：越浓越细
+      float st = mix(stepBig, stepSmall, sat(d*1.8));
 
-      // Check if WebGL extension is supported
-      if (!gl.getExtension("OES_standard_derivatives")) {
-        showErrorMessage("WebGL error: OES_standard_derivatives extension is not available.");
-        return;
+      // shadow: few steps towards sun (cheap self-shadow)
+      float TrL = 1.0;
+      vec3 Pl = P;
+      float lstep = 0.16;
+      for(int j=0;j<6;j++){
+        Pl += sunDir * lstep;
+        float dl = cloudDensity(Pl, time);
+        TrL *= exp(-dl * lstep * (sigmaA*1.10));
+        if(TrL < 0.06) break;
       }
 
-      function showErrorMessage(message) {
-        console.error(message); // Log to the browser console as well
-        errorMessageElement.innerText = message;
-        errorMessageElement.style.display = 'block';
-      }
+      // ambient based on height
+      float h = sat((P.y - 0.0) / 1.2);
+      vec3 amb = mix(ambHor, ambTop, smoothstep(0.15, 1.0, h));
 
-      // Define the vertex shader (V)
-      const V = `
-        attribute vec2 p;
-        void main() {
-          gl_Position = vec4(p, 0.0, 1.0);
-        }`;
+      // in-scattering (sun + ambient)
+      vec3 ins = sunCol * (phase * TrL) + amb;
 
-      // Define the fragment shader (F)
-      const F = `
-        precision highp float;
-        uniform vec2 r;
-        uniform float t;
+      // integrate: single scattering with Beer-Lambert extinction
+      float extinction = (sigmaA + sigmaS) * d;
+      float att = exp(-extinction * st);
 
-        // ----------------- Hash & Noise -----------------
-        float hash11(float n) { return fract(sin(n) * 43758.5453123); }
-        float hash31(vec3 p) { return hash11(dot(p, vec3(127.1, 311.7, 74.7))); }
-        float noise3(vec3 p) {
-          vec3 i = floor(p), f = fract(p);
-          f = f * f * (3.0 - 2.0 * f);
-          float n000 = hash31(i + vec3(0.0, 0.0, 0.0));
-          float n100 = hash31(i + vec3(1.0, 0.0, 0.0));
-          float n010 = hash31(i + vec3(0.0, 1.0, 0.0));
-          float n110 = hash31(i + vec3(1.0, 1.0, 0.0));
-          float n001 = hash31(i + vec3(0.0, 0.0, 1.0));
-          float n101 = hash31(i + vec3(1.0, 0.0, 1.0));
-          float n011 = hash31(i + vec3(0.0, 1.0, 1.0));
-          float n111 = hash31(i + vec3(1.0, 1.0, 1.0));
-          float nx00 = mix(n000, n100, f.x);
-          float nx10 = mix(n010, n110, f.x);
-          float nx01 = mix(n001, n101, f.x);
-          float nx11 = mix(n011, n111, f.x);
-          float nxy0 = mix(nx00, nx10, f.y);
-          float nxy1 = mix(nx01, nx11, f.y);
-          return mix(nxy0, nxy1, f.z);
-        }
+      // scattering contribution: proportional to (1-att) approximately
+      vec3 scat = ins * (1.0 - att) * (sigmaS / max(sigmaA + sigmaS, 1e-3));
 
-        // ----------------- Cloud Density Field -----------------
-        float fbm3(vec3 p) {
-          float v = 0.0, a = 0.58;
-          for (int i = 0; i < 6; i++) {
-            v += a * noise3(p);
-            p = p * 2.02 + vec3(19.7, 7.3, 11.1);
-            a *= 0.52;
-          }
-          return v;
-        }
+      col += T * scat;
 
-        // Cloud Density Function with Height Influence
-        float cloudField(vec3 P) {
-          float base = fbm3(P * 0.55);
-          float detail = fbm3(P * 2.2);
-          vec3 warp = vec3(
-            fbm3(P * 1.1 + 10.0),
-            fbm3(P * 1.1 + 30.0),
-            fbm3(P * 1.1 + 50.0)
-          );
-          P += (warp - 0.5) * 0.55;
-          float d = base * 0.78 + detail * 0.22;
-          d = smoothstep(0.48, 0.78, d);
-          d = pow(d, 1.35);
-          return d;
-        }
+      // update transmittance
+      T *= att;
 
-        // ----------------- Multiple Scattering Approximation -----------------
-        vec3 multiScatterApprox(vec3 single, float density, float TrL) {
-          float ms = 1.0 - exp(-density * 2.5);
-          return single * (1.0 + ms * 0.6) * (0.7 + 0.3 * TrL);
-        }
+      tc += st;
+    }
 
-        // ----------------- Light and Shadow -----------------
-        float lightTransmittance(vec3 p, vec3 L) {
-          float Tr = 1.0;
-          const int LS = 24;
-          float stepLen = 0.085;
-          for (int i = 0; i < LS; i++) {
-              p += L * stepLen;
-              float d = cloudField(p);
-              Tr *= exp(-d * 1.35 * stepLen * 6.5);
-              if (Tr < 0.02) break;
-          }
-          return clamp(Tr, 0.0, 1.0);
-        }
+    // 透射率驱动的银边：不是硬做高光，而是“路径长度差”的结果
+    float edge = pow(1.0 - T, 1.8);
+    col += edge * vec3(1.0, 0.995, 0.98) * 0.10;
 
-        // ----------------- Tone Mapping -----------------
-        vec3 tonemap(vec3 x) {
-          x = max(x, vec3(0.0));
-          return (x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14);
-        }
-      `;
+    // composite over sky
+    vec3 outCol = sky * T + col;
 
-      // WebGL setup and rendering loop
-      const shaderProgram = initShaderProgram(gl, V, F);
-      gl.useProgram(shaderProgram);
+    // gentle contrast / gamma
+    outCol = sat3(outCol);
+    outCol = pow(outCol, vec3(0.98));
 
-      // Rendering loop
-      function renderClouds() {
-        gl.clear(gl.COLOR_BUFFER_BIT);
-        // Continue rendering logic here
-      }
+    gl_FragColor = vec4(outCol, 1.0);
+  }`;
 
-      function mainLoop() {
-        renderClouds();
-        requestAnimationFrame(mainLoop);
-      }
+  function compile(type, src){
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+    if(!gl.getShaderParameter(s, gl.COMPILE_STATUS)){
+      const log = gl.getShaderInfoLog(s) || "Shader compile failed";
+      gl.deleteShader(s);
+      throw log;
+    }
+    return s;
+  }
 
-      mainLoop(); // start the loop
+  let prog;
+  try{
+    const vs = compile(gl.VERTEX_SHADER, V);
+    const fs = compile(gl.FRAGMENT_SHADER, F);
+    prog = gl.createProgram();
+    gl.attachShader(prog, vs);
+    gl.attachShader(prog, fs);
+    gl.linkProgram(prog);
+    gl.deleteShader(vs);
+    gl.deleteShader(fs);
+    if(!gl.getProgramParameter(prog, gl.LINK_STATUS)){
+      const log = gl.getProgramInfoLog(prog) || "Program link failed";
+      throw log;
+    }
+    gl.useProgram(prog);
+  }catch(e){
+    showErr(e);
+    return;
+  }
 
-    })(); // <-- Closing the IIFE
-  </script>
+  // fullscreen quad
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+    -1,-1,  1,-1, -1, 1,
+    -1, 1,  1,-1,  1, 1
+  ]), gl.STATIC_DRAW);
+
+  const locP = gl.getAttribLocation(prog, "p");
+  gl.enableVertexAttribArray(locP);
+  gl.vertexAttribPointer(locP, 2, gl.FLOAT, false, 0, 0);
+
+  const ur = gl.getUniformLocation(prog, "r");
+  const ut = gl.getUniformLocation(prog, "t");
+
+  // iOS Safari：分辨率别硬顶满，真实云要给性能空间
+  const RES_SCALE = 0.82; // 想更清晰：0.9；想更稳：0.75
+
+  function resize(){
+    const dpr = Math.min(2, (devicePixelRatio||1));
+    const vw = (visualViewport ? visualViewport.width : innerWidth);
+    const vh = (visualViewport ? visualViewport.height : innerHeight);
+    const w = Math.max(1, Math.floor(vw * dpr * RES_SCALE));
+    const h = Math.max(1, Math.floor(vh * dpr * RES_SCALE));
+    if(c.width !== w || c.height !== h){
+      c.width = w; c.height = h;
+      gl.viewport(0,0,w,h);
+      gl.uniform2f(ur, w, h);
+    }
+  }
+
+  addEventListener("resize", resize, {passive:true});
+  if(visualViewport) visualViewport.addEventListener("resize", resize, {passive:true});
+  resize();
+
+  let t0 = performance.now();
+  let paused = false;
+  document.addEventListener("visibilitychange", ()=>paused=document.hidden, {passive:true});
+
+  (function loop(now){
+    if(!paused){
+      gl.uniform1f(ut, (now - t0) / 1000);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+    }
+    requestAnimationFrame(loop);
+  })(t0);
+})();
+</script>
+</body>
 </html>
