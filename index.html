@@ -2,14 +2,14 @@
 <html lang="zh">
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
-<title>Procedural Volumetric Clouds (No Textures)</title>
+<title>Volumetric Clouds (Architectural Optimized, No Textures)</title>
 <style>
   html,body{margin:0;height:100%;overflow:hidden;background:#eef6ff}
   canvas{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none}
   #err{
-    position:fixed;left:12px;top:12px;right:12px;max-height:45vh;overflow:auto;
-    padding:10px 12px;border-radius:10px;background:rgba(0,0,0,.75);color:#fff;
-    font:12px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;display:none;z-index:9;
+    position:fixed;left:12px;top:12px;right:12px;max-height:50vh;overflow:auto;
+    padding:10px 12px;border-radius:10px;background:rgba(0,0,0,.78);color:#fff;
+    font:12px/1.35 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;display:none;z-index:9;
     white-space:pre-wrap;word-break:break-word;
   }
 </style>
@@ -20,14 +20,15 @@
 (()=> {
   const c = document.getElementById("c");
   const err = document.getElementById("err");
-
-  function showErr(s){
+  const showErr = (e)=>{
     err.style.display="block";
-    err.textContent = String(s||"Unknown error");
-    console.error(s);
-  }
+    err.textContent = String(e && e.message ? e.message : e);
+    console.error(e);
+  };
 
-  const gl = c.getContext("webgl",{antialias:false,alpha:false,premultipliedAlpha:false,depth:false,stencil:false});
+  const gl = c.getContext("webgl",{
+    antialias:false, alpha:false, premultipliedAlpha:false, depth:false, stencil:false
+  });
   if(!gl){
     const g=c.getContext("2d"); if(!g) return;
     g.fillStyle="#000"; g.font="16px system-ui";
@@ -35,319 +36,594 @@
     return;
   }
 
-  // Vertex: fullscreen quad
-  const V = `
-    attribute vec2 p;
-    void main(){ gl_Position = vec4(p,0.0,1.0); }
-  `;
-
-  // Fragment: procedural volumetric clouds (no textures)
-  const F = `
-  precision highp float;
-  uniform vec2  r;
-  uniform float t;
-
-  // --------- small helpers ----------
-  float sat(float x){ return clamp(x,0.0,1.0); }
-  vec3  sat3(vec3 x){ return clamp(x,0.0,1.0); }
-
-  // Hash (no textures)
-  float hash31(vec3 p){
-    p = fract(p*0.1031);
-    p += dot(p, p.yzx + 33.33);
-    return fract((p.x + p.y) * p.z);
-  }
-
-  // 3D value noise (trilinear)
-  float noise3(vec3 p){
-    vec3 i = floor(p);
-    vec3 f = fract(p);
-    f = f*f*(3.0-2.0*f);
-
-    float n000 = hash31(i + vec3(0,0,0));
-    float n100 = hash31(i + vec3(1,0,0));
-    float n010 = hash31(i + vec3(0,1,0));
-    float n110 = hash31(i + vec3(1,1,0));
-    float n001 = hash31(i + vec3(0,0,1));
-    float n101 = hash31(i + vec3(1,0,1));
-    float n011 = hash31(i + vec3(0,1,1));
-    float n111 = hash31(i + vec3(1,1,1));
-
-    float nx00 = mix(n000,n100,f.x);
-    float nx10 = mix(n010,n110,f.x);
-    float nx01 = mix(n001,n101,f.x);
-    float nx11 = mix(n011,n111,f.x);
-
-    float nxy0 = mix(nx00,nx10,f.y);
-    float nxy1 = mix(nx01,nx11,f.y);
-
-    return mix(nxy0,nxy1,f.z);
-  }
-
-  // fBm (kept small for iOS)
-  float fbm3(vec3 p){
-    float v = 0.0;
-    float a = 0.56;
-    // 5 octaves: good quality / still mobile friendly
-    for(int i=0;i<5;i++){
-      v += a * noise3(p);
-      p = p*1.92 + vec3(19.7, 7.3, 13.1);
-      a *= 0.52;
-    }
-    return v;
-  }
-
-  // Ridged-ish detail for erosion (cheap)
-  float ridged(vec3 p){
-    float n = fbm3(p);
-    n = 1.0 - abs(2.0*n - 1.0);
-    return n*n;
-  }
-
-  // Henyey-Greenstein phase (single scattering approx)
-  float phaseHG(float cosTheta, float g){
-    float gg = g*g;
-    float d = 1.0 + gg - 2.0*g*cosTheta;
-    return (1.0 - gg) / (4.0*3.14159265*pow(d, 1.5));
-  }
-
-  // Height profile: bottom thick, top thinner
-  float heightProfile(float h){
-    // h in [0..1]
-    float base = smoothstep(0.02, 0.18, h);
-    float top  = 1.0 - smoothstep(0.62, 0.98, h);
-    return base * top;
-  }
-
-  // Procedural density field (2.5D -> true 3D sampling)
-  float cloudDensity(vec3 P){
-    // World scale
-    vec3 p = P;
-
-    // Domain warp: makes “billows”
-    vec3 w;
-    w.x = fbm3(p*0.55 + vec3(0.0, 0.0, t*0.06));
-    w.y = fbm3(p*0.55 + vec3(9.1, 3.7, t*0.05));
-    w.z = fbm3(p*0.55 + vec3(2.8, 7.9, t*0.04));
-    p += (w - 0.5) * 0.85;
-
-    // Main shape (low freq)
-    float d0 = fbm3(p*0.85 + vec3(t*0.02, t*0.01, 0.0));
-
-    // Detail (higher freq)
-    float d1 = fbm3(p*1.95 - vec3(t*0.03, 0.0, t*0.02));
-
-    float dens = d0*0.78 + d1*0.22;
-
-    // Height layering: P.y defines altitude
-    float h = sat((P.y - 0.15) / 0.95); // map to [0..1] in our scene
-    dens *= heightProfile(h);
-
-    // Erosion: chew edges and cloud tops
-    float er = ridged(p*3.2 + vec3(0.0, t*0.08, 0.0));
-    // stronger erosion near top
-    float et = mix(0.10, 0.42, smoothstep(0.45, 0.95, h));
-    dens -= er * et;
-
-    // Threshold + shaping (prevents “fog sheet”)
-    dens = smoothstep(0.46, 0.78, dens);
-    dens = pow(dens, 1.15);
-
-    return sat(dens);
-  }
-
-  // Shadow along sun direction (few steps)
-  float shadowToSun(vec3 P, vec3 L){
-    float s = 1.0;
-    float dist = 0.0;
-    // 4 steps: cheap shadowing
-    for(int i=0;i<4;i++){
-      dist += 0.18 + 0.06*float(i);
-      float d = cloudDensity(P + L*dist);
-      // exponential attenuation
-      s *= exp(-d * 1.65);
-      if(s < 0.20) break;
-    }
-    return sat(s);
-  }
-
-  void main(){
-    vec2 uv = (gl_FragCoord.xy / r);
-    vec2 p = uv*2.0 - 1.0;
-    p.x *= r.x / r.y;
-
-    // Camera setup (simple)
-    vec3 ro = vec3(0.0, 0.55, 2.2);        // origin
-    vec3 rd = normalize(vec3(p.x, p.y*0.85, -1.35)); // direction
-
-    // Sun direction
-    vec3 sunDir = normalize(vec3(0.55, 0.42, -0.20));
-
-    // Sky background
-    vec3 skyTop = vec3(0.84, 0.93, 1.00);
-    vec3 skyBot = vec3(0.96, 0.98, 1.00);
-    float skyT = sat(p.y*0.55 + 0.55);
-    vec3 sky = mix(skyBot, skyTop, skyT);
-
-    // Raymarch within a slab (cloud layer bounds)
-    // We intersect a simple y-range slab: [yMin,yMax]
-    float yMin = 0.10;
-    float yMax = 1.10;
-
-    // Find t range where ray is inside [yMin,yMax]
-    // Solve ro.y + rd.y * s in [yMin,yMax]
-    float invY = 1.0 / max(abs(rd.y), 1e-4);
-    float s1 = (yMin - ro.y) * invY * sign(rd.y);
-    float s2 = (yMax - ro.y) * invY * sign(rd.y);
-    float sNear = min(s1,s2);
-    float sFar  = max(s1,s2);
-
-    // Also clamp to forward ray
-    float sStart = max(sNear, 0.0);
-    float sEnd   = max(sFar,  0.0);
-
-    // If not intersecting slab, just show sky
-    if(sEnd <= sStart){
-      gl_FragColor = vec4(sat3(pow(sky, vec3(0.98))), 1.0);
-      return;
-    }
-
-    // Integrate
-    vec3 col = vec3(0.0);
-    float T = 1.0; // transmittance
-    float s = sStart;
-
-    // Base step adapts with view angle (more steps on horizon)
-    float horizon = pow(1.0 - sat(abs(rd.y)), 1.25);
-    float baseStep = mix(0.22, 0.14, horizon);
-
-    // Constants (tuned for “white cloud”)
-    float absorption = 1.35;
-    float scatterStrength = 1.10;
-
-    // 10 max steps, early-out
-    for(int i=0;i<10;i++){
-      if(s > sEnd || T < 0.02) break;
-
-      vec3 P = ro + rd*s;
-
-      float d = cloudDensity(P);
-
-      // Adaptive step: low density -> larger step
-      float stepLen = baseStep * mix(1.35, 0.72, d);
-
-      // Light
-      float cosTheta = dot(rd, sunDir) * -1.0; // scattering angle (view vs sun)
-      float phase = phaseHG(cosTheta, 0.62);   // forward-ish
-      float sh = shadowToSun(P, sunDir);
-
-      // Ambient from sky: more at top
-      float h = sat((P.y - yMin) / (yMax - yMin));
-      vec3 ambient = mix(vec3(0.70,0.84,1.00), vec3(1.00,0.99,0.97), 0.30 + 0.70*h);
-
-      // Sun color slightly warm
-      vec3 sunCol = vec3(1.00, 0.98, 0.93);
-
-      // Single-scatter approximation
-      vec3 light = ambient * (0.55 + 0.45*(1.0 - d)) + sunCol * (0.90*sh) * phase * 7.5;
-
-      // Beer-Lambert
-      float att = exp(-d * absorption * stepLen);
-
-      // Accumulate (premultiplied style)
-      vec3 scatter = d * scatterStrength * light;
-      col += T * (1.0 - att) * scatter;
-
-      // Update transmittance
-      T *= att;
-
-      s += stepLen;
-    }
-
-    // Edge translucency / silverlining from physics result (T)
-    float edge = pow(1.0 - T, 0.85);
-    vec3 edgeCol = vec3(1.0) * (0.10 + 0.22*edge);
-
-    // Composite with sky
-    vec3 outCol = sky * T + col + edgeCol * edge;
-
-    // Gentle tonemap / gamma
-    outCol = outCol / (1.0 + outCol*0.65);
-    outCol = pow(sat3(outCol), vec3(0.98));
-
-    gl_FragColor = vec4(outCol, 1.0);
-  }`;
-
-  function sh(type, src){
+  // ---------- GL helpers ----------
+  function compile(type, src){
     const s = gl.createShader(type);
     gl.shaderSource(s, src);
     gl.compileShader(s);
     if(!gl.getShaderParameter(s, gl.COMPILE_STATUS)){
-      const info = gl.getShaderInfoLog(s) || "Shader compile failed";
-      throw new Error(info);
+      throw new Error(gl.getShaderInfoLog(s) || "Shader compile failed");
     }
     return s;
   }
-
-  let P;
-  try{
-    P = gl.createProgram();
-    gl.attachShader(P, sh(gl.VERTEX_SHADER, V));
-    gl.attachShader(P, sh(gl.FRAGMENT_SHADER, F));
-    gl.linkProgram(P);
-    if(!gl.getProgramParameter(P, gl.LINK_STATUS)){
-      throw new Error(gl.getProgramInfoLog(P) || "Program link failed");
+  function link(vs, fs){
+    const p = gl.createProgram();
+    gl.attachShader(p, compile(gl.VERTEX_SHADER, vs));
+    gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs));
+    gl.linkProgram(p);
+    if(!gl.getProgramParameter(p, gl.LINK_STATUS)){
+      throw new Error(gl.getProgramInfoLog(p) || "Program link failed");
     }
-    gl.useProgram(P);
-  }catch(e){
-    showErr(e && e.message ? e.message : e);
-    return;
+    return p;
+  }
+  function tex2D(w,h,filter){
+    const t = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,w,h,0,gl.RGBA,gl.UNSIGNED_BYTE,null);
+    return t;
+  }
+  function fboForTexture(tex){
+    const f = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, f);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    const ok = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+    if(!ok) throw new Error("Framebuffer incomplete");
+    return f;
   }
 
-  // Fullscreen quad buffer
-  const buf = gl.createBuffer();
-  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  // ---------- Fullscreen quad ----------
+  const quad = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, quad);
   gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
     -1,-1,  1,-1, -1, 1,
     -1, 1,  1,-1,  1, 1
   ]), gl.STATIC_DRAW);
 
-  const locP = gl.getAttribLocation(P, "p");
-  gl.enableVertexAttribArray(locP);
-  gl.vertexAttribPointer(locP, 2, gl.FLOAT, false, 0, 0);
+  const VS = `
+    attribute vec2 p;
+    varying vec2 v;
+    void main(){ v = p*0.5 + 0.5; gl_Position = vec4(p,0.0,1.0); }
+  `;
 
-  const ur = gl.getUniformLocation(P, "r");
-  const ut = gl.getUniformLocation(P, "t");
+  // ---------- Pass 1: cheap mask (coarse cloud likelihood) ----------
+  const FS_MASK = `
+    precision mediump float;
+    uniform vec2 r;
+    uniform float t;
+    varying vec2 v;
 
-  // iOS-friendly render scale: keep it stable & fast
-  const RENDER_SCALE = 0.78; // 0.65~0.9 可自行改，越大越清晰越费
+    float hash(vec2 p){ return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453123); }
+    float noise(vec2 p){
+      vec2 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f);
+      float a=hash(i), b=hash(i+vec2(1,0)), c=hash(i+vec2(0,1)), d=hash(i+vec2(1,1));
+      return mix(mix(a,b,f.x), mix(c,d,f.x), f.y);
+    }
+    float fbm2(vec2 p){
+      float v=0.0,a=0.62;
+      for(int i=0;i<3;i++){
+        v += a*noise(p);
+        p = p*1.95 + 17.3;
+        a *= 0.53;
+      }
+      return v;
+    }
+
+    void main(){
+      // normalized -1..1
+      vec2 uv = v;
+      vec2 p = uv*2.0 - 1.0;
+      p.x *= r.x / r.y;
+
+      // slow drift (low cost)
+      float tt = t*0.03;
+      vec2 drift = vec2(tt*0.9, tt*0.55);
+
+      // coarse density only (very cheap)
+      vec2 q = p*0.95;
+      float d = fbm2(q*0.9 + drift);
+
+      // height profile: clouds more on upper half
+      float h = clamp((p.y + 0.25)*0.75, 0.0, 1.0);
+      d *= smoothstep(0.05, 0.35, h) * (1.0 - smoothstep(0.70, 1.00, h));
+
+      // threshold for "likely cloud here"
+      float m = smoothstep(0.48, 0.70, d);
+
+      // expand mask a bit (avoid missing thin features)
+      // cheap dilation-like: raise mid values
+      m = pow(m, 0.75);
+
+      // store mask in R (0..1). other channels unused.
+      gl_FragColor = vec4(m, m, m, 1.0);
+    }
+  `;
+
+  // ---------- Pass 2: volumetric cloud at low-res with checkerboard + temporal accumulation ----------
+  // Output encoding: RGBA8 where RGB = cloudColor (premultiplied-ish LDR), A = transmittance T (0..1)
+  const FS_CLOUD = `
+    precision highp float;
+    uniform vec2 r;          // low-res size
+    uniform float t;
+    uniform sampler2D prevTex;
+    uniform sampler2D maskTex;
+    uniform float parity;    // 0 or 1 (checkerboard)
+    varying vec2 v;
+
+    float sat(float x){ return clamp(x,0.0,1.0); }
+    vec3  sat3(vec3 x){ return clamp(x,0.0,1.0); }
+
+    // deterministic per-pixel hash (no texture)
+    float hash12(vec2 p){
+      vec3 p3 = fract(vec3(p.xyx)*0.1031);
+      p3 += dot(p3, p3.yzx + 33.33);
+      return fract((p3.x + p3.y)*p3.z);
+    }
+    float hash31(vec3 p){
+      p = fract(p*0.1031);
+      p += dot(p, p.yzx + 33.33);
+      return fract((p.x+p.y)*p.z);
+    }
+
+    float noise3(vec3 p){
+      vec3 i=floor(p), f=fract(p);
+      f = f*f*(3.0-2.0*f);
+      float n000=hash31(i+vec3(0,0,0));
+      float n100=hash31(i+vec3(1,0,0));
+      float n010=hash31(i+vec3(0,1,0));
+      float n110=hash31(i+vec3(1,1,0));
+      float n001=hash31(i+vec3(0,0,1));
+      float n101=hash31(i+vec3(1,0,1));
+      float n011=hash31(i+vec3(0,1,1));
+      float n111=hash31(i+vec3(1,1,1));
+      float nx00=mix(n000,n100,f.x);
+      float nx10=mix(n010,n110,f.x);
+      float nx01=mix(n001,n101,f.x);
+      float nx11=mix(n011,n111,f.x);
+      float nxy0=mix(nx00,nx10,f.y);
+      float nxy1=mix(nx01,nx11,f.y);
+      return mix(nxy0,nxy1,f.z);
+    }
+    float fbm3(vec3 p){
+      float v=0.0,a=0.56;
+      for(int i=0;i<5;i++){
+        v += a*noise3(p);
+        p = p*1.92 + vec3(19.7,7.3,13.1);
+        a *= 0.52;
+      }
+      return v;
+    }
+    float ridged(vec3 p){
+      float n = fbm3(p);
+      n = 1.0 - abs(2.0*n - 1.0);
+      return n*n;
+    }
+
+    float phaseHG(float cosTheta, float g){
+      float gg=g*g;
+      float d=1.0+gg-2.0*g*cosTheta;
+      return (1.0-gg) / (4.0*3.14159265*pow(d,1.5));
+    }
+    float heightProfile(float h){
+      float base = smoothstep(0.02, 0.18, h);
+      float top  = 1.0 - smoothstep(0.62, 0.98, h);
+      return base*top;
+    }
+
+    float cloudDensity(vec3 P){
+      vec3 p = P;
+
+      // 4D-ish evolution: time enters z/y differently (no extra dimension needed)
+      float tt = t*0.06;
+
+      // domain warp (moderate)
+      vec3 w;
+      w.x = fbm3(p*0.55 + vec3(0.0, 0.0, tt));
+      w.y = fbm3(p*0.55 + vec3(9.1, 3.7, tt*0.83));
+      w.z = fbm3(p*0.55 + vec3(2.8, 7.9, tt*0.71));
+      p += (w - 0.5) * 0.85;
+
+      // main + detail
+      float d0 = fbm3(p*0.85 + vec3(t*0.02, t*0.01, 0.0));
+      float d1 = fbm3(p*1.95 - vec3(t*0.03, 0.0, t*0.02));
+      float dens = d0*0.78 + d1*0.22;
+
+      // height layering: P.y maps to [0..1]
+      float h = sat((P.y - 0.15) / 0.95);
+      dens *= heightProfile(h);
+
+      // erosion stronger near top
+      float er = ridged(p*3.2 + vec3(0.0, t*0.08, 0.0));
+      float et = mix(0.10, 0.42, smoothstep(0.45, 0.95, h));
+      dens -= er * et;
+
+      // shape & threshold
+      dens = smoothstep(0.46, 0.78, dens);
+      dens = pow(dens, 1.15);
+
+      return sat(dens);
+    }
+
+    // conditional, cheap shadow: only when density is meaningful
+    float shadowToSun(vec3 P, vec3 L, float localD){
+      if(localD < 0.12) return 1.0;
+      float s=1.0;
+      float dist=0.0;
+      for(int i=0;i<4;i++){
+        dist += 0.18 + 0.06*float(i);
+        float d = cloudDensity(P + L*dist);
+        s *= exp(-d * 1.65);
+        if(s < 0.20) break;
+      }
+      return sat(s);
+    }
+
+    void main(){
+      // checkerboard: compute only half pixels each frame
+      vec2 frag = gl_FragCoord.xy;
+      float cb = mod(frag.x + frag.y, 2.0);
+      vec4 prev = texture2D(prevTex, v);
+
+      if(abs(cb - parity) > 0.1){
+        // skip computation: keep previous (temporal stability)
+        gl_FragColor = prev;
+        return;
+      }
+
+      // mask culling: if low likelihood, quickly converge to "no cloud"
+      float m = texture2D(maskTex, v).r;
+      if(m < 0.04){
+        // fade prev towards clear sky (T=1, col=0)
+        vec4 clear = vec4(0.0,0.0,0.0,1.0);
+        gl_FragColor = mix(prev, clear, 0.18);
+        return;
+      }
+
+      // camera & ray (same as earlier, but low-res)
+      vec2 uv = v*2.0 - 1.0;
+      uv.x *= r.x / r.y;
+
+      vec3 ro = vec3(0.0, 0.55, 2.2);
+      vec3 rd = normalize(vec3(uv.x, uv.y*0.85, -1.35));
+      vec3 sunDir = normalize(vec3(0.55, 0.42, -0.20));
+
+      // slab bounds
+      float yMin=0.10, yMax=1.10;
+      float invY = 1.0 / max(abs(rd.y), 1e-4);
+      float s1 = (yMin - ro.y) * invY * sign(rd.y);
+      float s2 = (yMax - ro.y) * invY * sign(rd.y);
+      float sNear = min(s1,s2);
+      float sFar  = max(s1,s2);
+      float sStart = max(sNear, 0.0);
+      float sEnd   = max(sFar,  0.0);
+
+      if(sEnd <= sStart){
+        // outside cloud layer: converge to clear
+        vec4 clear = vec4(0.0,0.0,0.0,1.0);
+        gl_FragColor = mix(prev, clear, 0.20);
+        return;
+      }
+
+      // stochastic jitter for temporal sampling (no blue-noise texture)
+      float j = hash12(frag + t*37.0) - 0.5;
+
+      // integration
+      vec3 col = vec3(0.0);
+      float T = 1.0;
+      float s = sStart;
+
+      float horizon = pow(1.0 - sat(abs(rd.y)), 1.25);
+      float baseStep = mix(0.22, 0.14, horizon);
+
+      float absorption = 1.35;
+      float scatterStrength = 1.10;
+
+      // coarse empty-space skipping: if coarse density low, leap further
+      // (uses just one low-freq sample per loop)
+      for(int i=0;i<10;i++){
+        if(s > sEnd || T < 0.02) break; // early-out
+
+        vec3 P = ro + rd*(s + j*0.05);
+
+        // coarse density for skipping
+        float coarse = fbm3(P*0.45 + vec3(t*0.01,0.0,t*0.01));
+        // map coarse to [0..1] and include height
+        float hh = sat((P.y - yMin) / (yMax - yMin));
+        coarse *= heightProfile(hh);
+
+        if(coarse < 0.06){
+          s += baseStep * 2.2; // big leap in empty-ish space
+          continue;
+        }
+
+        float d = cloudDensity(P);
+
+        // adaptive step: low density => larger step
+        float stepLen = baseStep * mix(1.45, 0.72, d);
+
+        float cosTheta = dot(rd, sunDir) * -1.0;
+        float phase = phaseHG(cosTheta, 0.62);
+
+        float sh = shadowToSun(P, sunDir, d);
+
+        // ambient sky-ish (top cooler, base warmer)
+        vec3 ambient = mix(vec3(0.70,0.84,1.00), vec3(1.00,0.99,0.97), 0.30 + 0.70*hh);
+        vec3 sunCol  = vec3(1.00, 0.98, 0.93);
+
+        vec3 light = ambient * (0.55 + 0.45*(1.0 - d))
+                   + sunCol * (0.90*sh) * phase * 7.5;
+
+        float att = exp(-d * absorption * stepLen);
+
+        vec3 scatter = d * scatterStrength * light;
+        col += T * (1.0 - att) * scatter;
+        T *= att;
+
+        s += stepLen;
+      }
+
+      // Physically-derived edge translucency from T
+      float edge = pow(1.0 - T, 0.85);
+      col += vec3(1.0) * (0.06 + 0.18*edge) * edge;
+
+      // Tonemap to LDR for RGBA8 storage
+      vec3 ldr = col / (1.0 + col*0.65);
+      ldr = pow(sat3(ldr), vec3(0.98));
+
+      vec4 curr = vec4(ldr, sat(T));
+
+      // Temporal accumulation (exponential moving average)
+      // reset on big changes to avoid ghosting
+      float dA = abs(curr.a - prev.a);
+      float a = 0.12;                 // base blend
+      a = mix(a, 0.25, m);            // more responsive where mask says "cloud"
+      a = (dA > 0.10) ? 1.0 : a;      // hard reset if transmittance changed a lot
+
+      gl_FragColor = mix(prev, curr, a);
+    }
+  `;
+
+  // ---------- Pass 3: composite full-res with edge-aware upsample ----------
+  const FS_FINAL = `
+    precision highp float;
+    uniform vec2 r;          // full-res
+    uniform float t;
+    uniform sampler2D cloudTex; // low-res cloud (RGB ldr, A=T)
+    uniform sampler2D maskTex;  // low-res mask
+    uniform vec2 lr;         // low-res size
+    varying vec2 v;
+
+    float sat(float x){ return clamp(x,0.0,1.0); }
+    vec3  sat3(vec3 x){ return clamp(x,0.0,1.0); }
+
+    // edge-aware upsample: 4 taps with weights based on mask similarity
+    vec4 sampleEA(vec2 uv){
+      // uv in [0..1] full-res; map to low-res texel space
+      vec2 texel = 1.0 / lr;
+      vec2 p = uv * lr - 0.5;
+      vec2 i = floor(p);
+      vec2 f = fract(p);
+
+      vec2 uv00 = (i + vec2(0.0,0.0) + 0.5) * texel;
+      vec2 uv10 = (i + vec2(1.0,0.0) + 0.5) * texel;
+      vec2 uv01 = (i + vec2(0.0,1.0) + 0.5) * texel;
+      vec2 uv11 = (i + vec2(1.0,1.0) + 0.5) * texel;
+
+      float m00 = texture2D(maskTex, uv00).r;
+      float m10 = texture2D(maskTex, uv10).r;
+      float m01 = texture2D(maskTex, uv01).r;
+      float m11 = texture2D(maskTex, uv11).r;
+
+      // center mask for edge guidance
+      float mc = texture2D(maskTex, (i+0.5)*texel).r;
+
+      // similarity weights (prevent bleeding across cloud edge)
+      float w00 = exp(-abs(m00-mc)*10.0);
+      float w10 = exp(-abs(m10-mc)*10.0);
+      float w01 = exp(-abs(m01-mc)*10.0);
+      float w11 = exp(-abs(m11-mc)*10.0);
+
+      // bilinear factors
+      float b00 = (1.0-f.x)*(1.0-f.y);
+      float b10 = (f.x)*(1.0-f.y);
+      float b01 = (1.0-f.x)*(f.y);
+      float b11 = (f.x)*(f.y);
+
+      w00 *= b00; w10 *= b10; w01 *= b01; w11 *= b11;
+      float ws = max(w00+w10+w01+w11, 1e-4);
+
+      vec4 c00 = texture2D(cloudTex, uv00);
+      vec4 c10 = texture2D(cloudTex, uv10);
+      vec4 c01 = texture2D(cloudTex, uv01);
+      vec4 c11 = texture2D(cloudTex, uv11);
+
+      return (c00*w00 + c10*w10 + c01*w01 + c11*w11) / ws;
+    }
+
+    void main(){
+      vec2 p = v*2.0 - 1.0;
+      p.x *= r.x / r.y;
+
+      // Sky
+      vec3 skyTop = vec3(0.84, 0.93, 1.00);
+      vec3 skyBot = vec3(0.96, 0.98, 1.00);
+      float skyT = sat(p.y*0.55 + 0.55);
+      vec3 sky = mix(skyBot, skyTop, skyT);
+
+      vec4 cloud = sampleEA(v);
+      vec3 col = sky * cloud.a + cloud.rgb; // rgb already ldr-ish
+
+      // small final curve for iOS
+      col = pow(sat3(col), vec3(0.995));
+      gl_FragColor = vec4(col, 1.0);
+    }
+  `;
+
+  let progMask, progCloud, progFinal;
+  try{
+    progMask  = link(VS, FS_MASK);
+    progCloud = link(VS, FS_CLOUD);
+    progFinal = link(VS, FS_FINAL);
+  }catch(e){
+    showErr(e);
+    return;
+  }
+
+  function bindQuad(prog){
+    gl.useProgram(prog);
+    gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+    const loc = gl.getAttribLocation(prog, "p");
+    gl.enableVertexAttribArray(loc);
+    gl.vertexAttribPointer(loc,2,gl.FLOAT,false,0,0);
+  }
+
+  // uniforms cache
+  const U = {
+    mask: {
+      r: gl.getUniformLocation(progMask, "r"),
+      t: gl.getUniformLocation(progMask, "t"),
+    },
+    cloud: {
+      r: gl.getUniformLocation(progCloud, "r"),
+      t: gl.getUniformLocation(progCloud, "t"),
+      prevTex: gl.getUniformLocation(progCloud, "prevTex"),
+      maskTex: gl.getUniformLocation(progCloud, "maskTex"),
+      parity: gl.getUniformLocation(progCloud, "parity"),
+    },
+    final: {
+      r: gl.getUniformLocation(progFinal, "r"),
+      t: gl.getUniformLocation(progFinal, "t"),
+      cloudTex: gl.getUniformLocation(progFinal, "cloudTex"),
+      maskTex: gl.getUniformLocation(progFinal, "maskTex"),
+      lr: gl.getUniformLocation(progFinal, "lr"),
+    }
+  };
+
+  // ---------- Render targets (low-res) ----------
+  const CLOUD_SCALE = 0.62; // 固定“云计算分辨率”（架构层），不是随便调参数：这里是专门给性能的
+  let W=1,H=1, LW=1,LH=1;
+
+  // ping-pong cloud accumulation
+  let cloudTexA=null, cloudTexB=null, cloudFboA=null, cloudFboB=null;
+  // mask
+  let maskTex=null, maskFbo=null;
+
+  function allocTargets(){
+    // release old (not strictly necessary in short-lived demo, but do it cleanly)
+    function del(t,f){
+      if(t) gl.deleteTexture(t);
+      if(f) gl.deleteFramebuffer(f);
+    }
+    del(cloudTexA, cloudFboA);
+    del(cloudTexB, cloudFboB);
+    del(maskTex, maskFbo);
+
+    cloudTexA = tex2D(LW,LH,gl.LINEAR);
+    cloudTexB = tex2D(LW,LH,gl.LINEAR);
+    maskTex   = tex2D(LW,LH,gl.LINEAR);
+
+    cloudFboA = fboForTexture(cloudTexA);
+    cloudFboB = fboForTexture(cloudTexB);
+    maskFbo   = fboForTexture(maskTex);
+
+    // clear accum buffers to "clear sky": rgb=0, a=1
+    gl.bindFramebuffer(gl.FRAMEBUFFER, cloudFboA);
+    gl.viewport(0,0,LW,LH);
+    gl.clearColor(0,0,0,1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, cloudFboB);
+    gl.viewport(0,0,LW,LH);
+    gl.clearColor(0,0,0,1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  }
 
   function resize(){
     const dpr = Math.min(2, (devicePixelRatio||1));
     const vw = (visualViewport ? visualViewport.width  : innerWidth);
     const vh = (visualViewport ? visualViewport.height : innerHeight);
 
-    const w = Math.max(1, Math.floor(vw * dpr * RENDER_SCALE));
-    const h = Math.max(1, Math.floor(vh * dpr * RENDER_SCALE));
+    W = Math.max(1, Math.floor(vw * dpr));
+    H = Math.max(1, Math.floor(vh * dpr));
 
-    if(c.width !== w || c.height !== h){
-      c.width = w; c.height = h;
-      gl.viewport(0,0,w,h);
-      gl.uniform2f(ur, w, h);
-    }
+    c.width = W; c.height = H;
+
+    // low-res cloud buffers
+    LW = Math.max(2, Math.floor(W * CLOUD_SCALE));
+    LH = Math.max(2, Math.floor(H * CLOUD_SCALE));
+
+    allocTargets();
   }
+
   addEventListener("resize", resize, {passive:true});
   if(visualViewport) visualViewport.addEventListener("resize", resize, {passive:true});
   resize();
 
+  // ---------- render loop ----------
   let t0 = performance.now();
-  let paused = false;
+  let paused=false;
   document.addEventListener("visibilitychange", ()=>paused=document.hidden, {passive:true});
+
+  let ping = 0; // 0 => write A read B; 1 => write B read A
+  let frame = 0;
+
+  function setTex(unit, tex, loc){
+    gl.activeTexture(gl.TEXTURE0 + unit);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.uniform1i(loc, unit);
+  }
 
   (function loop(now){
     if(!paused){
-      gl.uniform1f(ut, (now - t0) * 0.001);
+      const time = (now - t0) * 0.001;
+
+      const writeFbo = ping ? cloudFboB : cloudFboA;
+      const readTex  = ping ? cloudTexA : cloudTexB;
+
+      // Pass 1: mask (low-res)
+      gl.bindFramebuffer(gl.FRAMEBUFFER, maskFbo);
+      gl.viewport(0,0,LW,LH);
+      bindQuad(progMask);
+      gl.uniform2f(U.mask.r, LW, LH);
+      gl.uniform1f(U.mask.t, time);
       gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+      // Pass 2: cloud integrate + temporal accumulate (low-res)
+      gl.bindFramebuffer(gl.FRAMEBUFFER, writeFbo);
+      gl.viewport(0,0,LW,LH);
+      bindQuad(progCloud);
+      gl.uniform2f(U.cloud.r, LW, LH);
+      gl.uniform1f(U.cloud.t, time);
+      gl.uniform1f(U.cloud.parity, (frame & 1) ? 1.0 : 0.0);
+
+      setTex(0, readTex,  U.cloud.prevTex);
+      setTex(1, maskTex,  U.cloud.maskTex);
+
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+      // swap ping-pong
+      ping ^= 1;
+      const cloudTex = ping ? cloudTexB : cloudTexA; // after swap, this is the latest written
+
+      // Pass 3: final composite (full-res)
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.viewport(0,0,W,H);
+      bindQuad(progFinal);
+      gl.uniform2f(U.final.r, W, H);
+      gl.uniform1f(U.final.t, time);
+      gl.uniform2f(U.final.lr, LW, LH);
+
+      setTex(0, cloudTex, U.final.cloudTex);
+      setTex(1, maskTex,  U.final.maskTex);
+
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+      frame++;
     }
     requestAnimationFrame(loop);
   })(t0);
